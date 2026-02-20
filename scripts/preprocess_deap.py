@@ -46,13 +46,12 @@ def main() -> None:
 
     subjects = args.subjects or list(range(1, 33))
 
-    preprocessor = EEGPreprocessor(
-        sfreq=cfg.data.deap.sfreq,
-        lowcut=cfg.data.deap.lowcut,
-        highcut=cfg.data.deap.highcut,
-        epoch_sec=cfg.data.deap.epoch_sec,
-        bands=list(cfg.data.deap.bands),
-    )
+    eeg_config = {
+        "sampling_rate": cfg.data.deap.sfreq,
+        "epoch_length_sec": cfg.data.deap.epoch_sec,
+        "filter_order": 5,
+    }
+    preprocessor = EEGPreprocessor(eeg_config)
     mapper = LabelMapper()
 
     for subj in subjects:

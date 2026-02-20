@@ -68,16 +68,14 @@ def run_pipeline(cfg: DictConfig) -> dict:
 
     deap_loader = DEAPLoader(
         processed_dir=paths["deap_processed"],
-        label_mapper=LabelMapper(),
     )
-    eeg_features, eeg_labels = deap_loader.load_all(flatten=True)
+    eeg_features, eeg_labels, _ = deap_loader.load_all(flatten=True)
     logger.info("  DEAP: %d samples, feature_dim=%d", len(eeg_features), eeg_features.shape[1])
 
     iemocap_loader = IEMOCAPLoader(
         processed_dir=paths["iemocap_processed"],
-        label_mapper=LabelMapper(),
     )
-    speech_features, speech_labels = iemocap_loader.load_all()
+    speech_features, speech_labels, _ = iemocap_loader.load_all()
     logger.info("  IEMOCAP: %d samples, shape=%s", len(speech_features), speech_features.shape[1:])
 
     # Simple train/val split (will be replaced by LOSO CV in evaluation)

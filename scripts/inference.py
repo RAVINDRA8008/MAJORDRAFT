@@ -40,12 +40,12 @@ def main() -> None:
     ckpt = Path(paths["checkpoints"])
 
     # --- Preprocess speech ---
-    sp_proc = SpeechPreprocessor(
-        sr=cfg.data.iemocap.sr,
-        n_mfcc=cfg.data.iemocap.n_mfcc,
-        max_len=cfg.data.iemocap.max_len,
-    )
-    speech_feat = sp_proc.extract_features(args.wav_file)
+    speech_config = {
+        "target_sr": cfg.data.iemocap.sr,
+        "n_mfcc": cfg.data.iemocap.n_mfcc,
+    }
+    sp_proc = SpeechPreprocessor(speech_config)
+    speech_feat = sp_proc.process_utterance(args.wav_file)
     speech_tensor = torch.as_tensor(speech_feat, dtype=torch.float32).unsqueeze(0).to(device)
 
     # --- Load EEG feature ---
@@ -62,15 +62,15 @@ def main() -> None:
     eeg_enc.eval()
 
     speech_enc = SpeechEncoder(
-        n_mfcc=cfg.model.speech_encoder.n_mfcc,
+        n_features=cfg.model.speech_encoder.n_mfcc,
         embedding_dim=cfg.model.speech_encoder.embedding_dim,
     ).to(device)
     speech_enc.load_state_dict(torch.load(ckpt / "speech" / "speech_encoder_final.pt", map_location=device))
     speech_enc.eval()
 
     fusion = FusionClassifier(
-        eeg_dim=cfg.model.fusion.eeg_dim,
-        speech_dim=cfg.model.fusion.speech_dim,
+        eeg_embed_dim=cfg.model.fusion.eeg_dim,
+        speech_embed_dim=cfg.model.fusion.speech_dim,
         num_classes=cfg.model.num_classes,
     ).to(device)
     rl_path = ckpt / "rl" / "best_fusion.pt"

@@ -29,14 +29,16 @@ class GANTrainer:
         self.device = get_device()
 
         gcfg = cfg.model.gan
-        self.gan = ConditionalGAN(
-            feature_dim=gcfg.feature_dim,
-            noise_dim=gcfg.noise_dim,
-            hidden_dim=gcfg.hidden_dim,
-            num_classes=cfg.model.num_classes,
-            lr_g=gcfg.lr_g,
-            lr_d=gcfg.lr_d,
-        ).to(self.device)
+        gan_config = {
+            "feature_dim": gcfg.feature_dim,
+            "latent_dim": gcfg.noise_dim,
+            "num_classes": cfg.model.num_classes,
+            "generator_hidden_dims": [gcfg.hidden_dim, gcfg.hidden_dim * 2, gcfg.hidden_dim],
+            "discriminator_hidden_dims": [gcfg.hidden_dim, gcfg.hidden_dim * 2, gcfg.hidden_dim],
+            "lr": gcfg.lr_g,
+            "label_smooth": 0.9,
+        }
+        self.gan = ConditionalGAN(gan_config, self.device)
 
         self.epochs = gcfg.epochs
         self.batch_size = gcfg.batch_size

@@ -33,12 +33,12 @@ class SpeechTrainer:
 
         scfg = cfg.model.speech_encoder
         self.encoder = SpeechEncoder(
-            n_mfcc=scfg.n_mfcc,
-            cnn_channels=scfg.cnn_channels,
-            lstm_hidden=scfg.lstm_hidden,
-            lstm_layers=scfg.lstm_layers,
+            n_features=scfg.n_mfcc,
+            cnn_channels=list(scfg.cnn_channels),
+            lstm_hidden_size=scfg.lstm_hidden,
+            lstm_num_layers=scfg.lstm_layers,
+            lstm_dropout=scfg.dropout,
             embedding_dim=scfg.embedding_dim,
-            dropout=scfg.dropout,
         ).to(self.device)
 
         self.head = Classifier(

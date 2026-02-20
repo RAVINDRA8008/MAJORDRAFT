@@ -17,7 +17,6 @@ from src.utils.seed import set_seed
 from src.utils.paths import get_paths, ensure_dirs
 from src.utils.logging_setup import setup_logging
 from src.data.deap_loader import DEAPLoader
-from src.data.label_mapper import LabelMapper
 from src.training.gan_trainer import GANTrainer
 from src.utils.visualization import plot_loss_curves
 
@@ -35,8 +34,8 @@ def main() -> None:
     ensure_dirs(paths)
 
     # Load data
-    loader = DEAPLoader(processed_dir=paths["deap_processed"], label_mapper=LabelMapper())
-    features, labels = loader.load_all(flatten=True)
+    loader = DEAPLoader(processed_dir=paths["deap_processed"])
+    features, labels, _ = loader.load_all(flatten=True)
     features = torch.as_tensor(features, dtype=torch.float32)
     labels = torch.as_tensor(labels, dtype=torch.long)
 
@@ -52,8 +51,9 @@ def main() -> None:
 
     # Plot
     plot_loss_curves(
-        {"G_loss": history["g_loss"], "D_loss": history["d_loss"]},
-        title="cGAN Training",
+        history["g_loss"],
+        val_losses=history["d_loss"],
+        title="cGAN Training (G vs D loss)",
         save_path=str(Path(paths["outputs"]) / "gan_loss.png"),
     )
     print("GAN training complete. Checkpoint:", save_dir)

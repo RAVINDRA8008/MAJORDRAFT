@@ -48,7 +48,7 @@ def main() -> None:
 
     # Speech encoder
     speech_enc = SpeechEncoder(
-        n_mfcc=cfg.model.speech_encoder.n_mfcc,
+        n_features=cfg.model.speech_encoder.n_mfcc,
         embedding_dim=cfg.model.speech_encoder.embedding_dim,
     )
     sp_path = ckpt / "speech" / "speech_encoder_final.pt"
@@ -63,8 +63,8 @@ def main() -> None:
 
     # Fusion
     fusion = FusionClassifier(
-        eeg_dim=cfg.model.fusion.eeg_dim,
-        speech_dim=cfg.model.fusion.speech_dim,
+        eeg_embed_dim=cfg.model.fusion.eeg_dim,
+        speech_embed_dim=cfg.model.fusion.speech_dim,
         num_classes=cfg.model.num_classes,
     )
     rl_path = ckpt / "rl" / "best_fusion.pt"

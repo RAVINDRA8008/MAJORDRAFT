@@ -69,12 +69,13 @@ def main() -> None:
 
     sessions = args.sessions or list(range(1, 6))
 
-    preprocessor = SpeechPreprocessor(
-        sr=cfg.data.iemocap.sr,
-        n_mfcc=cfg.data.iemocap.n_mfcc,
-        max_len=cfg.data.iemocap.max_len,
-        pre_emphasis=cfg.data.iemocap.pre_emphasis,
-    )
+    speech_config = {
+        "target_sr": cfg.data.iemocap.sr,
+        "n_mfcc": cfg.data.iemocap.n_mfcc,
+        "max_utterance_length_sec": cfg.data.iemocap.max_len / 1000 if cfg.data.iemocap.max_len > 100 else 8.0,
+        "pre_emphasis_coeff": cfg.data.iemocap.pre_emphasis,
+    }
+    preprocessor = SpeechPreprocessor(speech_config)
     mapper = LabelMapper()
 
     target_emotions = {"hap", "exc", "sad", "ang", "neu"}

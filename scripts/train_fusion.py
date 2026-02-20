@@ -19,7 +19,6 @@ from src.utils.logging_setup import setup_logging
 
 from src.data.deap_loader import DEAPLoader
 from src.data.iemocap_loader import IEMOCAPLoader
-from src.data.label_mapper import LabelMapper
 
 from src.models.eeg_encoder import EEGEncoder
 from src.models.speech_encoder import SpeechEncoder
@@ -43,10 +42,10 @@ def main() -> None:
     device = get_device()
 
     # Load data
-    deap = DEAPLoader(processed_dir=paths["deap_processed"], label_mapper=LabelMapper())
-    eeg_feat, eeg_lbl = deap.load_all(flatten=True)
-    iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"], label_mapper=LabelMapper())
-    sp_feat, sp_lbl = iemocap.load_all()
+    deap = DEAPLoader(processed_dir=paths["deap_processed"])
+    eeg_feat, eeg_lbl, _ = deap.load_all(flatten=True)
+    iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"])
+    sp_feat, sp_lbl, _ = iemocap.load_all()
 
     eeg_Xt, eeg_Xv, eeg_yt, eeg_yv = train_test_split(
         eeg_feat, eeg_lbl, test_size=0.2, stratify=eeg_lbl, random_state=cfg.seed,
@@ -69,7 +68,7 @@ def main() -> None:
     eeg_enc.eval()
 
     speech_enc = SpeechEncoder(
-        n_mfcc=cfg.model.speech_encoder.n_mfcc,
+        n_features=cfg.model.speech_encoder.n_mfcc,
         embedding_dim=cfg.model.speech_encoder.embedding_dim,
     ).to(device)
     sp_ckpt = ckpt / "speech" / "speech_encoder_final.pt"
@@ -103,9 +102,10 @@ def main() -> None:
 
     # Plot
     out = Path(paths["outputs"])
-    plot_loss_curves({"train_loss": history["train_loss"]}, save_path=str(out / "fusion_loss.png"))
+    plot_loss_curves(history["train_loss"], save_path=str(out / "fusion_loss.png"))
     plot_accuracy_curves(
-        {"train": history["train_acc"], "val": history["val_acc"]},
+        history["train_acc"],
+        history["val_acc"],
         save_path=str(out / "fusion_acc.png"),
     )
     print("Fusion training complete. Checkpoint:", save_dir)

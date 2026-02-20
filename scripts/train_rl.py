@@ -25,7 +25,6 @@ from src.utils.checkpoint import load_model
 
 from src.data.deap_loader import DEAPLoader
 from src.data.iemocap_loader import IEMOCAPLoader
-from src.data.label_mapper import LabelMapper
 
 from src.models.eeg_encoder import EEGEncoder
 from src.models.speech_encoder import SpeechEncoder
@@ -51,12 +50,15 @@ def main() -> None:
     # ---- Load pre-trained components ----
     ckpt = Path(paths["checkpoints"])
 
-    gan = ConditionalGAN(
-        feature_dim=cfg.model.gan.feature_dim,
-        noise_dim=cfg.model.gan.noise_dim,
-        hidden_dim=cfg.model.gan.hidden_dim,
-        num_classes=cfg.model.num_classes,
-    )
+    gan_config = {
+        "feature_dim": cfg.model.gan.feature_dim,
+        "latent_dim": cfg.model.gan.noise_dim,
+        "num_classes": cfg.model.num_classes,
+        "generator_hidden_dims": [cfg.model.gan.hidden_dim, cfg.model.gan.hidden_dim * 2, cfg.model.gan.hidden_dim],
+        "discriminator_hidden_dims": [cfg.model.gan.hidden_dim, cfg.model.gan.hidden_dim * 2, cfg.model.gan.hidden_dim],
+        "lr": cfg.model.gan.lr_g,
+    }
+    gan = ConditionalGAN(gan_config, torch.device("cpu"))
     gan.load_state_dict(torch.load(ckpt / "gan" / "gan_final.pt", map_location="cpu"))
 
     eeg_enc = EEGEncoder(
@@ -67,14 +69,14 @@ def main() -> None:
     eeg_enc.load_state_dict(torch.load(ckpt / "eeg" / "eeg_encoder_final.pt", map_location="cpu"))
 
     speech_enc = SpeechEncoder(
-        n_mfcc=cfg.model.speech_encoder.n_mfcc,
+        n_features=cfg.model.speech_encoder.n_mfcc,
         embedding_dim=cfg.model.speech_encoder.embedding_dim,
     )
     speech_enc.load_state_dict(torch.load(ckpt / "speech" / "speech_encoder_final.pt", map_location="cpu"))
 
     fusion = FusionClassifier(
-        eeg_dim=cfg.model.fusion.eeg_dim,
-        speech_dim=cfg.model.fusion.speech_dim,
+        eeg_embed_dim=cfg.model.fusion.eeg_dim,
+        speech_embed_dim=cfg.model.fusion.speech_dim,
         num_classes=cfg.model.num_classes,
     )
     # Optionally load warm-up checkpoint
@@ -84,10 +86,10 @@ def main() -> None:
         fusion.load_state_dict(sd.get("fusion", sd))
 
     # ---- Load data ----
-    deap = DEAPLoader(processed_dir=paths["deap_processed"], label_mapper=LabelMapper())
-    eeg_feat, eeg_lbl = deap.load_all(flatten=True)
-    iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"], label_mapper=LabelMapper())
-    sp_feat, sp_lbl = iemocap.load_all()
+    deap = DEAPLoader(processed_dir=paths["deap_processed"])
+    eeg_feat, eeg_lbl, _ = deap.load_all(flatten=True)
+    iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"])
+    sp_feat, sp_lbl, _ = iemocap.load_all()
 
     eeg_Xt, eeg_Xv, eeg_yt, eeg_yv = train_test_split(
         eeg_feat, eeg_lbl, test_size=0.2, stratify=eeg_lbl, random_state=cfg.seed,

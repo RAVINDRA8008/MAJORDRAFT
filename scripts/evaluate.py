@@ -25,7 +25,6 @@ from src.utils.device import get_device
 
 from src.data.deap_loader import DEAPLoader
 from src.data.iemocap_loader import IEMOCAPLoader
-from src.data.label_mapper import LabelMapper
 
 from src.models.eeg_encoder import EEGEncoder
 from src.models.speech_encoder import SpeechEncoder
@@ -53,10 +52,10 @@ def main() -> None:
     out = Path(paths["outputs"])
 
     # Load data (full → split → use test portion)
-    deap = DEAPLoader(processed_dir=paths["deap_processed"], label_mapper=LabelMapper())
-    eeg_feat, eeg_lbl = deap.load_all(flatten=True)
-    iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"], label_mapper=LabelMapper())
-    sp_feat, sp_lbl = iemocap.load_all()
+    deap = DEAPLoader(processed_dir=paths["deap_processed"])
+    eeg_feat, eeg_lbl, _ = deap.load_all(flatten=True)
+    iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"])
+    sp_feat, sp_lbl, _ = iemocap.load_all()
 
     _, eeg_Xv, _, eeg_yv = train_test_split(
         eeg_feat, eeg_lbl, test_size=0.2, stratify=eeg_lbl, random_state=cfg.seed,
@@ -75,15 +74,15 @@ def main() -> None:
     eeg_enc.eval()
 
     speech_enc = SpeechEncoder(
-        n_mfcc=cfg.model.speech_encoder.n_mfcc,
+        n_features=cfg.model.speech_encoder.n_mfcc,
         embedding_dim=cfg.model.speech_encoder.embedding_dim,
     ).to(device)
     speech_enc.load_state_dict(torch.load(ckpt / "speech" / "speech_encoder_final.pt", map_location=device))
     speech_enc.eval()
 
     fusion = FusionClassifier(
-        eeg_dim=cfg.model.fusion.eeg_dim,
-        speech_dim=cfg.model.fusion.speech_dim,
+        eeg_embed_dim=cfg.model.fusion.eeg_dim,
+        speech_embed_dim=cfg.model.fusion.speech_dim,
         num_classes=cfg.model.num_classes,
     ).to(device)
     # Load best RL checkpoint if available, else baseline
@@ -112,8 +111,9 @@ def main() -> None:
 
     # Plots
     plot_confusion_matrix(
-        np.array(metrics["confusion_matrix"]),
-        class_names=["Happy", "Sad", "Angry", "Neutral"],
+        labels,
+        preds,
+        labels=["Happy", "Sad", "Angry", "Neutral"],
         save_path=str(out / "confusion_matrix.png"),
     )
 

@@ -32,12 +32,12 @@ class FusionTrainer:
 
         fcfg = cfg.model.fusion
         self.fusion = FusionClassifier(
-            eeg_dim=fcfg.eeg_dim,
-            speech_dim=fcfg.speech_dim,
+            eeg_embed_dim=fcfg.eeg_dim,
+            speech_embed_dim=fcfg.speech_dim,
             hidden_dims=list(fcfg.hidden_dims),
             num_classes=cfg.model.num_classes,
-            dropout=fcfg.dropout,
-            modality_dropout=fcfg.modality_dropout,
+            dropout=[fcfg.dropout, fcfg.dropout] if not isinstance(fcfg.dropout, list) else list(fcfg.dropout),
+            modality_dropout_prob=fcfg.modality_dropout,
         ).to(self.device)
 
         self.epochs = fcfg.get("epochs", 50)

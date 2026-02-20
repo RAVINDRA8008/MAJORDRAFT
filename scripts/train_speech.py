@@ -17,7 +17,6 @@ from src.utils.seed import set_seed
 from src.utils.paths import get_paths, ensure_dirs
 from src.utils.logging_setup import setup_logging
 from src.data.iemocap_loader import IEMOCAPLoader
-from src.data.label_mapper import LabelMapper
 from src.training.speech_trainer import SpeechTrainer
 from src.utils.visualization import plot_loss_curves, plot_accuracy_curves
 
@@ -35,8 +34,8 @@ def main() -> None:
     ensure_dirs(paths)
 
     # Load data
-    loader = IEMOCAPLoader(processed_dir=paths["iemocap_processed"], label_mapper=LabelMapper())
-    features, labels = loader.load_all()
+    loader = IEMOCAPLoader(processed_dir=paths["iemocap_processed"])
+    features, labels, _ = loader.load_all()
 
     X_train, X_val, y_train, y_val = train_test_split(
         features, labels, test_size=0.2, stratify=labels, random_state=cfg.seed,
@@ -60,12 +59,13 @@ def main() -> None:
     # Plot
     out = Path(paths["outputs"])
     plot_loss_curves(
-        {"train_loss": history["train_loss"]},
+        history["train_loss"],
         title="Speech Encoder Pre-Training Loss",
         save_path=str(out / "speech_loss.png"),
     )
     plot_accuracy_curves(
-        {"train": history["train_acc"], "val": history["val_acc"]},
+        history["train_acc"],
+        history["val_acc"],
         title="Speech Encoder Accuracy",
         save_path=str(out / "speech_acc.png"),
     )
