@@ -30,7 +30,7 @@ desktop.ini
 .ipynb_checkpoints/
 
 # Data files (too large for Git — stored on Google Drive)
-data/
+/data/
 *.dat
 *.wav
 *.npy
