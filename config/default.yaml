@@ -1,0 +1,118 @@
+# ============================================================
+# AMERS — Default Configuration
+# ============================================================
+# Override any key via CLI:  python scripts/train_full_pipeline.py seed=123
+
+seed: 42
+project_name: AMERS
+
+# ------ Google Drive paths (Colab) ------
+paths:
+  drive_root: /content/drive/MyDrive/AMERS
+  deap_raw: ${paths.drive_root}/data/deap/raw
+  deap_processed: ${paths.drive_root}/data/deap/processed
+  iemocap_raw: ${paths.drive_root}/data/iemocap/raw
+  iemocap_processed: ${paths.drive_root}/data/iemocap/processed
+  checkpoints: ${paths.drive_root}/checkpoints
+  outputs: ${paths.drive_root}/outputs
+  logs: ${paths.drive_root}/logs
+  use_local_cache: false
+  local_cache_dir: /content/local_cache
+
+# ------ Data parameters ------
+data:
+  deap:
+    sfreq: 128
+    lowcut: 4.0
+    highcut: 45.0
+    epoch_sec: 1.0
+    bands:
+      - [4, 8]     # theta
+      - [8, 12]    # alpha
+      - [12, 16]   # low-beta
+      - [16, 30]   # high-beta
+      - [30, 45]   # gamma
+    n_subjects: 32
+    valence_threshold: 5.0
+    arousal_threshold: 5.0
+
+  iemocap:
+    sr: 16000
+    n_mfcc: 40
+    max_len: 800
+    pre_emphasis: 0.97
+    n_sessions: 5
+    target_emotions:
+      - hap
+      - exc
+      - sad
+      - ang
+      - neu
+
+# ------ Model architecture ------
+model:
+  num_classes: 4
+
+  eeg_encoder:
+    input_dim: 160           # 32 channels × 5 bands
+    hidden_dims: [256, 128]
+    embedding_dim: 128
+    dropout: 0.3
+    pretrain_epochs: 20
+
+  speech_encoder:
+    n_mfcc: 120              # 40 × 3 (static + Δ + ΔΔ)
+    cnn_channels: [32, 64, 128]
+    lstm_hidden: 128
+    lstm_layers: 2
+    embedding_dim: 128
+    dropout: 0.3
+    pretrain_epochs: 30
+    batch_size: 64
+    lr: 0.001
+
+  gan:
+    feature_dim: 160
+    noise_dim: 64
+    hidden_dim: 256
+    lr_g: 0.0002
+    lr_d: 0.0002
+    epochs: 100
+    batch_size: 128
+
+  fusion:
+    eeg_dim: 128
+    speech_dim: 128
+    hidden_dims: [128, 64]
+    num_classes: 4
+    dropout: 0.3
+    modality_dropout: 0.2
+    epochs: 50
+    batch_size: 64
+    lr: 0.001
+
+# ------ Reinforcement Learning ------
+rl:
+  obs_dim: 8
+  max_ratio: 1.0
+  max_steps: 50
+  hidden_dim: 64
+  lr_actor: 0.0003
+  lr_critic: 0.001
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  entropy_coeff: 0.01
+  update_epochs: 4
+  ppo_update_every: 5
+
+# ------ Training ------
+training:
+  log_every: 5
+  save_every: 10
+  early_stop_patience: 15
+
+# ------ Logging ------
+logging:
+  level: INFO
+  tensorboard: true

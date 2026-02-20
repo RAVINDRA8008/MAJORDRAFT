@@ -1,0 +1,25 @@
+# Quick debug config — tiny dataset, few epochs
+# Usage: python scripts/train_full_pipeline.py --config config/experiments/debug_small.yaml
+
+seed: 0
+
+model:
+  eeg_encoder:
+    pretrain_epochs: 2
+  speech_encoder:
+    pretrain_epochs: 2
+    batch_size: 16
+  gan:
+    epochs: 5
+    batch_size: 16
+  fusion:
+    epochs: 3
+    batch_size: 16
+
+rl:
+  max_steps: 3
+  ppo_update_every: 2
+
+training:
+  log_every: 1
+  save_every: 100   # effectively never

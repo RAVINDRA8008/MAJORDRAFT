@@ -1,0 +1,24 @@
+# Full LOSO 4-class experiment
+# Usage: python scripts/train_full_pipeline.py --config config/experiments/loso_4class.yaml
+
+seed: 42
+
+model:
+  eeg_encoder:
+    pretrain_epochs: 30
+  speech_encoder:
+    pretrain_epochs: 50
+  gan:
+    epochs: 200
+    batch_size: 128
+  fusion:
+    epochs: 100
+
+rl:
+  max_steps: 80
+  ppo_update_every: 10
+
+training:
+  log_every: 10
+  save_every: 20
+  early_stop_patience: 20
