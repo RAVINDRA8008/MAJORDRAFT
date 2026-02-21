@@ -59,6 +59,8 @@ model:
     embedding_dim: 128
     dropout: 0.3
     pretrain_epochs: 20
+    batch_size: 64
+    lr: 0.001
 
   speech_encoder:
     n_mfcc: 120              # 40 × 3 (static + Δ + ΔΔ)

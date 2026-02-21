@@ -48,6 +48,8 @@ def get_paths(use_local_cache: bool = True) -> dict[str, str]:
 
         # Output paths (always on Drive for persistence)
         "checkpoints": f"{_DRIVE_BASE}/outputs/checkpoints",
+        "outputs": f"{_DRIVE_BASE}/outputs",
+        "logs": f"{_DRIVE_BASE}/logs",
         "tensorboard": f"{_DRIVE_BASE}/outputs/tensorboard",
         "evaluation": f"{_DRIVE_BASE}/outputs/evaluation",
         "export": f"{_DRIVE_BASE}/outputs/export",
