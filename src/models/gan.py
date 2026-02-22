@@ -272,3 +272,32 @@ class ConditionalGAN:
         combined_labels = torch.cat([real_labels, syn_labels], dim=0)
 
         return combined_features, combined_labels
+
+    # ------------------------------------------------------------------
+    # Serialisation helpers (mimic nn.Module interface)
+    # ------------------------------------------------------------------
+    def state_dict(self) -> dict:
+        """Return combined state dict for generator, discriminator & optimisers."""
+        return {
+            "generator": self.generator.state_dict(),
+            "discriminator": self.discriminator.state_dict(),
+            "opt_g": self.opt_g.state_dict(),
+            "opt_d": self.opt_d.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Load a state dict produced by :meth:`state_dict`.
+
+        Also accepts a *flat* generator-only state dict for backward
+        compatibility (e.g. if only the generator was saved).
+        """
+        if "generator" in state:
+            self.generator.load_state_dict(state["generator"])
+            self.discriminator.load_state_dict(state["discriminator"])
+            if "opt_g" in state:
+                self.opt_g.load_state_dict(state["opt_g"])
+            if "opt_d" in state:
+                self.opt_d.load_state_dict(state["opt_d"])
+        else:
+            # Legacy: flat state dict is generator-only
+            self.generator.load_state_dict(state)
