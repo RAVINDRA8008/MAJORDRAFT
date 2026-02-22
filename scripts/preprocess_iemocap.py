@@ -103,7 +103,7 @@ def main() -> None:
             if label < 0:
                 continue
 
-            feat = preprocessor.extract_features(str(wav_file))
+            feat = preprocessor.process_utterance(str(wav_file))
             features_list.append(feat)
             labels_list.append(label)
 
