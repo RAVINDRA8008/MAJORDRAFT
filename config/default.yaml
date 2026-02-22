@@ -77,10 +77,10 @@ model:
     feature_dim: 160
     noise_dim: 64
     hidden_dim: 256
-    lr_g: 0.0002
-    lr_d: 0.0002
+    lr_g: 0.0001             # TTUR: G gets lower LR
+    lr_d: 0.0002             # TTUR: D gets higher LR
     epochs: 100
-    batch_size: 128
+    batch_size: 256
 
   fusion:
     eeg_dim: 128
