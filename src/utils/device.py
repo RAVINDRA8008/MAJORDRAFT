@@ -21,7 +21,7 @@ def get_device(preferred: str = "cuda") -> torch.device:
     if preferred == "cuda" and torch.cuda.is_available():
         dev = torch.device("cuda")
         name = torch.cuda.get_device_name(0)
-        mem = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+        mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         logger.info("Using GPU: %s (%.1f GB)", name, mem)
     else:
         dev = torch.device("cpu")
