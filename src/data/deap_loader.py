@@ -21,7 +21,7 @@ class DEAPLoader:
             subjects: List of subject IDs (1–32) to load.
                       ``None`` loads all 32.
         """
-        self.processed_dir = Path(processed_dir) / "features"
+        self.processed_dir = Path(processed_dir)
         self.subjects = subjects or list(range(1, 33))
 
     def load_subject(self, subject_id: int) -> tuple[np.ndarray, np.ndarray]:
