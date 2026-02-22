@@ -99,7 +99,7 @@ def main() -> None:
             emotion = label_map.get(utt_id)
             if emotion not in target_emotions:
                 continue
-            label = mapper.iemocap_label(emotion)
+            label = mapper.map_iemocap_labels(emotion)
             if label < 0:
                 continue
 

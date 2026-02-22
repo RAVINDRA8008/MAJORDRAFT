@@ -6,12 +6,24 @@ import logging
 import sys
 
 
-def setup_logging(level: str = "INFO") -> None:
+def setup_logging(level_or_cfg="INFO") -> None:
     """Configure the root logger with a consistent format.
 
     Args:
-        level: Logging level string (``"DEBUG"``, ``"INFO"``, ``"WARNING"``, etc.).
+        level_or_cfg: A logging-level string (``"INFO"``, etc.) **or** an
+            OmegaConf / dict config object that has ``logging.level``.
     """
+    # Accept full cfg objects — extract the level string
+    if hasattr(level_or_cfg, "logging"):
+        try:
+            level = str(level_or_cfg.logging.level)
+        except Exception:
+            level = "INFO"
+    elif isinstance(level_or_cfg, dict) and "logging" in level_or_cfg:
+        level = str(level_or_cfg["logging"].get("level", "INFO"))
+    else:
+        level = str(level_or_cfg)
+
     numeric_level = getattr(logging, level.upper(), logging.INFO)
 
     formatter = logging.Formatter(
