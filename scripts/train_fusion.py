@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Train the late-fusion classifier (baseline, no RL)."""
+"""Train the late-fusion classifier (baseline, no RL).
+
+Key change: uses LABEL-ALIGNED pairing — EEG and speech samples are
+matched by emotion class, not by index.  This creates semantically
+meaningful cross-modal pairs from two separate datasets (DEAP + IEMOCAP).
+"""
 
 from __future__ import annotations
 
@@ -22,7 +27,6 @@ from src.data.iemocap_loader import IEMOCAPLoader
 
 from src.models.eeg_encoder import EEGEncoder
 from src.models.speech_encoder import SpeechEncoder
-from src.models.fusion import FusionClassifier
 from src.training.fusion_trainer import FusionTrainer
 from src.utils.device import get_device
 from src.utils.visualization import plot_loss_curves, plot_accuracy_curves
@@ -41,12 +45,16 @@ def main() -> None:
     ensure_dirs(paths)
     device = get_device()
 
+    # Enable cudnn benchmark for consistent input sizes
+    torch.backends.cudnn.benchmark = True
+
     # Load data
     deap = DEAPLoader(processed_dir=paths["deap_processed"])
     eeg_feat, eeg_lbl, _ = deap.load_all(flatten=True)
     iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"])
     sp_feat, sp_lbl, _ = iemocap.load_all()
 
+    # Split EACH modality independently (stratified)
     eeg_Xt, eeg_Xv, eeg_yt, eeg_yv = train_test_split(
         eeg_feat, eeg_lbl, test_size=0.2, stratify=eeg_lbl, random_state=cfg.seed,
     )
@@ -79,7 +87,6 @@ def main() -> None:
 
     # Encode in batches to avoid OOM
     def _encode_batched(encoder, data, batch_size=512):
-        """Encode data in chunks to stay within GPU memory."""
         parts = []
         t = torch.as_tensor(data, dtype=torch.float32)
         for i in range(0, len(t), batch_size):
@@ -93,20 +100,31 @@ def main() -> None:
         sp_emb_t = _encode_batched(speech_enc, sp_Xt)
         sp_emb_v = _encode_batched(speech_enc, sp_Xv)
 
-    n_t = min(len(eeg_emb_t), len(sp_emb_t))
-    n_v = min(len(eeg_emb_v), len(sp_emb_v))
+    # Convert labels to tensors
+    eeg_yt_t = torch.as_tensor(eeg_yt, dtype=torch.long)
+    eeg_yv_t = torch.as_tensor(eeg_yv, dtype=torch.long)
+    sp_yt_t = torch.as_tensor(sp_yt, dtype=torch.long)
+    sp_yv_t = torch.as_tensor(sp_yv, dtype=torch.long)
 
-    # Train
+    print(f"\nLabel-aligned fusion training:")
+    print(f"  EEG train: {len(eeg_emb_t)} embeddings, Speech train: {len(sp_emb_t)} embeddings")
+    print(f"  EEG val:   {len(eeg_emb_v)} embeddings, Speech val:   {len(sp_emb_v)} embeddings")
+    print(f"  Pairing strategy: LABEL-ALIGNED (same emotion class)\n")
+
+    # Train using label-aligned pairing
     save_dir = ckpt / "fusion"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     trainer = FusionTrainer(cfg)
     history = trainer.fit(
-        eeg_emb_t[:n_t], sp_emb_t[:n_t],
-        torch.as_tensor(eeg_yt[:n_t], dtype=torch.long),
-        val_eeg_emb=eeg_emb_v[:n_v],
-        val_speech_emb=sp_emb_v[:n_v],
-        val_labels=torch.as_tensor(eeg_yv[:n_v], dtype=torch.long),
+        eeg_emb=eeg_emb_t,
+        eeg_labels=eeg_yt_t,
+        speech_emb=sp_emb_t,
+        speech_labels=sp_yt_t,
+        val_eeg_emb=eeg_emb_v,
+        val_eeg_labels=eeg_yv_t,
+        val_speech_emb=sp_emb_v,
+        val_speech_labels=sp_yv_t,
         save_dir=save_dir,
     )
 

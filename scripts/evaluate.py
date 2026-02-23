@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Evaluate a trained AMERS model on test data.
 
-Generates full metrics, confusion matrix, t-SNE plots, and a
-Markdown report.
+Uses LABEL-ALIGNED pairing: EEG and speech samples are matched by
+emotion class, not by index.  Also evaluates each modality individually.
+
+Generates: confusion matrix, t-SNE plots, Markdown report.
 """
 
 from __future__ import annotations
@@ -34,7 +36,42 @@ from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.report_generator import generate_report
 from src.utils.visualization import plot_confusion_matrix, plot_tsne
 
+# Maps numeric labels to emotion names
 LABEL_NAMES = ["Angry", "Happy", "Sad", "Neutral"]
+
+
+def _encode_batched(encoder, data, device, batch_size=512):
+    """Encode data through an encoder in batches to avoid OOM."""
+    parts = []
+    t = torch.as_tensor(data, dtype=torch.float32)
+    for i in range(0, len(t), batch_size):
+        parts.append(encoder(t[i : i + batch_size].to(device)).cpu())
+    return torch.cat(parts, dim=0)
+
+
+def _label_aligned_pairs(eeg_emb, eeg_labels, sp_emb, sp_labels, num_classes=4):
+    """Create label-aligned (eeg, speech, label) pairs for evaluation.
+
+    For each class, pairs up to min(n_eeg, n_speech) samples randomly.
+    Returns flat tensors ready for evaluation.
+    """
+    eeg_list, sp_list, lbl_list = [], [], []
+    for c in range(num_classes):
+        eeg_mask = eeg_labels == c
+        sp_mask = sp_labels == c
+        eeg_c = eeg_emb[eeg_mask]
+        sp_c = sp_emb[sp_mask]
+        n = min(len(eeg_c), len(sp_c))
+        if n == 0:
+            continue
+        # Shuffle and take n
+        eeg_perm = torch.randperm(len(eeg_c))[:n]
+        sp_perm = torch.randperm(len(sp_c))[:n]
+        eeg_list.append(eeg_c[eeg_perm])
+        sp_list.append(sp_c[sp_perm])
+        lbl_list.append(torch.full((n,), c, dtype=torch.long))
+
+    return torch.cat(eeg_list), torch.cat(sp_list), torch.cat(lbl_list)
 
 
 def main() -> None:
@@ -53,7 +90,7 @@ def main() -> None:
     ckpt = Path(paths["checkpoints"])
     out = Path(paths["outputs"])
 
-    # Load data (full → split → use test portion)
+    # ── Load data (full → split → use test portion) ──
     deap = DEAPLoader(processed_dir=paths["deap_processed"])
     eeg_feat, eeg_lbl, _ = deap.load_all(flatten=True)
     iemocap = IEMOCAPLoader(processed_dir=paths["iemocap_processed"])
@@ -66,7 +103,7 @@ def main() -> None:
         sp_feat, sp_lbl, test_size=0.2, stratify=sp_lbl, random_state=cfg.seed,
     )
 
-    # Load models
+    # ── Load models ──
     ecfg = cfg.model.eeg_encoder
     eeg_enc = EEGEncoder(
         input_dim=ecfg.input_dim,
@@ -74,7 +111,9 @@ def main() -> None:
         embedding_dim=ecfg.embedding_dim,
         dropout=ecfg.dropout,
     ).to(device)
-    eeg_enc.load_state_dict(torch.load(ckpt / "eeg" / "eeg_encoder_final.pt", map_location=device))
+    eeg_enc.load_state_dict(
+        torch.load(ckpt / "eeg" / "eeg_encoder_final.pt", map_location=device)
+    )
     eeg_enc.eval()
 
     scfg = cfg.model.speech_encoder
@@ -82,18 +121,27 @@ def main() -> None:
         n_features=scfg.n_mfcc,
         embedding_dim=scfg.embedding_dim,
     ).to(device)
-    speech_enc.load_state_dict(torch.load(ckpt / "speech" / "speech_encoder_final.pt", map_location=device))
+    speech_enc.load_state_dict(
+        torch.load(ckpt / "speech" / "speech_encoder_final.pt", map_location=device)
+    )
     speech_enc.eval()
 
     fcfg = cfg.model.fusion
+    dropout_val = fcfg.dropout
+    if isinstance(dropout_val, (int, float)):
+        dropout_list = [float(dropout_val)] * len(list(fcfg.hidden_dims))
+    else:
+        dropout_list = list(dropout_val)
+
     fusion = FusionClassifier(
         eeg_embed_dim=fcfg.eeg_dim,
         speech_embed_dim=fcfg.speech_dim,
         hidden_dims=list(fcfg.hidden_dims),
         num_classes=cfg.model.num_classes,
-        dropout=[fcfg.dropout, fcfg.dropout] if not isinstance(fcfg.dropout, list) else list(fcfg.dropout),
-        modality_dropout_prob=fcfg.modality_dropout,
+        dropout=dropout_list,
+        modality_dropout_prob=0.0,  # no dropout at eval
     ).to(device)
+
     # Load best RL checkpoint if available, else baseline
     rl_path = ckpt / "rl" / "best_fusion.pt"
     bl_path = ckpt / "fusion" / "best_fusion_baseline.pt"
@@ -109,56 +157,90 @@ def main() -> None:
         print("WARNING: No fusion checkpoint found — using random weights")
     fusion.eval()
 
-    # Encode in batches to avoid OOM
-    def _encode_batched(encoder, data, batch_size=512):
-        parts = []
-        t = torch.as_tensor(data, dtype=torch.float32)
-        for i in range(0, len(t), batch_size):
-            parts.append(encoder(t[i : i + batch_size].to(device)).cpu())
-        return torch.cat(parts, dim=0)
-
+    # ── Encode validation data ──
     with torch.no_grad():
-        eeg_emb = _encode_batched(eeg_enc, eeg_Xv)
-        sp_emb = _encode_batched(speech_enc, sp_Xv)
-        n = min(len(eeg_emb), len(sp_emb))
-        # Predict in batches (cap both slices to n to avoid size mismatch)
+        eeg_emb = _encode_batched(eeg_enc, eeg_Xv, device)
+        sp_emb = _encode_batched(speech_enc, sp_Xv, device)
+
+    eeg_yv_t = torch.as_tensor(eeg_yv, dtype=torch.long)
+    sp_yv_t = torch.as_tensor(sp_yv, dtype=torch.long)
+
+    # ── Label-aligned evaluation ──
+    eeg_paired, sp_paired, labels_paired = _label_aligned_pairs(
+        eeg_emb, eeg_yv_t, sp_emb, sp_yv_t, num_classes=cfg.model.num_classes,
+    )
+
+    print(f"\nLabel-aligned evaluation: {len(labels_paired)} paired samples")
+    from collections import Counter
+    dist = Counter(labels_paired.numpy().tolist())
+    for c in sorted(dist):
+        print(f"  Class {c} ({LABEL_NAMES[c]}): {dist[c]} pairs")
+
+    # ── Predict in batches ──
+    with torch.no_grad():
         all_preds = []
-        for i in range(0, n, 512):
-            end = min(i + 512, n)
+        for i in range(0, len(labels_paired), 512):
+            end = min(i + 512, len(labels_paired))
             logits = fusion(
-                eeg_emb[i:end].to(device),
-                sp_emb[i:end].to(device),
+                eeg_paired[i:end].to(device),
+                sp_paired[i:end].to(device),
             )
             all_preds.append(logits.argmax(1).cpu())
         preds = torch.cat(all_preds).numpy()
 
-    labels = eeg_yv[:n]
-    metrics = compute_all_metrics(labels, preds)
+    labels = labels_paired.numpy()
+    metrics = compute_all_metrics(labels, preds, label_names=LABEL_NAMES)
 
+    # ── Print results ──
     print("\n" + "=" * 60)
-    print("AMERS EVALUATION RESULTS")
+    print("AMERS EVALUATION RESULTS (label-aligned)")
     print("=" * 60)
     print(metrics["report_str"])
     print(f"Overall accuracy:  {metrics['accuracy']:.4f}")
     print(f"Macro F1:          {metrics['f1_macro']:.4f}")
     print(f"Weighted F1:       {metrics['f1_weighted']:.4f}")
     print(f"Cohen's Kappa:     {metrics['kappa']:.4f}")
+
+    # ── Per-modality accuracy (using simple classifier heads if available) ──
+    # EEG standalone: predict most-common class per embedding cluster
+    eeg_only_path = ckpt / "eeg" / "eeg_encoder_final.pt"
+    if eeg_only_path.exists():
+        # Simple nearest-centroid classifier for EEG
+        eeg_train_feat, _, eeg_train_lbl, _ = train_test_split(
+            eeg_feat, eeg_lbl, test_size=0.2, stratify=eeg_lbl, random_state=cfg.seed,
+        )
+        with torch.no_grad():
+            eeg_train_emb = _encode_batched(eeg_enc, eeg_train_feat, device)
+        eeg_train_lbl_t = torch.as_tensor(eeg_train_lbl, dtype=torch.long)
+        # Compute class centroids
+        centroids = []
+        for c in range(cfg.model.num_classes):
+            mask = eeg_train_lbl_t == c
+            if mask.any():
+                centroids.append(eeg_train_emb[mask].mean(0))
+            else:
+                centroids.append(torch.zeros(eeg_emb.shape[1]))
+        centroids = torch.stack(centroids)  # (num_classes, embed_dim)
+        # Classify val by nearest centroid
+        dists = torch.cdist(eeg_emb, centroids)  # (n_val, num_classes)
+        eeg_preds = dists.argmin(1).numpy()
+        eeg_acc = float((eeg_preds == eeg_yv).mean())
+        print(f"\nEEG-only accuracy (nearest centroid): {eeg_acc:.4f}")
+
     print("=" * 60)
 
-    # Plots
+    # ── Plots ──
     plot_confusion_matrix(
-        labels,
-        preds,
-        labels=LABEL_NAMES,
+        labels, preds, labels=LABEL_NAMES,
         save_path=str(out / "confusion_matrix.png"),
     )
 
-    # t-SNE on fusion embeddings
+    # t-SNE on fused embeddings
     with torch.no_grad():
-        fused = torch.cat([eeg_emb[:n], sp_emb[:n]], dim=1).cpu().numpy()
+        fused = torch.cat([eeg_paired, sp_paired], dim=1).numpy()
     plot_tsne(fused, labels, save_path=str(out / "tsne_embeddings.png"))
 
-    # Report
+    # ── Report ──
     results = {"overall_metrics": metrics}
     generate_report(results, output_dir=out)
     print(f"\nReport saved to {out / 'report.md'}")

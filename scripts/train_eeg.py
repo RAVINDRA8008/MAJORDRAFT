@@ -2,12 +2,11 @@
 """Pre-train the EEG encoder on DEAP differential-entropy features.
 
 Optimised training with:
-- Class-weighted CE loss (handles extreme DEAP imbalance)
-- Balanced batch sampling
+- Focal loss (gamma=2) for extreme DEAP imbalance (47:1)
+- Balanced batch sampling (WeightedRandomSampler)
 - Mixed-precision training (AMP)
 - Cosine LR scheduling with warmup
 - Early stopping + best-checkpoint selection
-- Label smoothing
 - Gradient clipping
 """
 
@@ -21,6 +20,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
@@ -37,6 +37,23 @@ from src.models.eeg_encoder import EEGEncoder
 from src.utils.visualization import plot_loss_curves, plot_accuracy_curves
 
 LABEL_NAMES = {0: "angry", 1: "happy", 2: "sad", 3: "neutral"}
+
+
+class FocalLoss(nn.Module):
+    """Focal loss for imbalanced classification: FL = -(1-pt)^gamma * log(pt)"""
+
+    def __init__(self, gamma: float = 2.0, weight: torch.Tensor | None = None,
+                 label_smoothing: float = 0.05) -> None:
+        super().__init__()
+        self.gamma = gamma
+        self.weight = weight
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce = F.cross_entropy(logits, targets, weight=self.weight,
+                             label_smoothing=self.label_smoothing, reduction="none")
+        pt = torch.exp(-ce)
+        return (((1 - pt) ** self.gamma) * ce).mean()
 
 
 def compute_class_weights(labels: torch.Tensor) -> torch.Tensor:
@@ -68,6 +85,7 @@ def main() -> None:
     ensure_dirs(paths)
     device = get_device()
     use_amp = device.type == "cuda"
+    torch.backends.cudnn.benchmark = True
 
     # ── Load data ──
     loader = DEAPLoader(processed_dir=paths["deap_processed"])
@@ -119,8 +137,10 @@ def main() -> None:
 
     params = list(encoder.parameters()) + list(head.parameters())
     optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=1e-4)
-    criterion = nn.CrossEntropyLoss(
-        label_smoothing=0.1,
+    criterion = FocalLoss(
+        gamma=2.0,
+        weight=class_weights,
+        label_smoothing=0.05,
     )
 
     # Cosine LR scheduler with warmup
@@ -168,7 +188,7 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(params, max_norm=5.0)
+            nn.utils.clip_grad_norm_(params, max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
 

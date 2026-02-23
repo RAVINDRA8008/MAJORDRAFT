@@ -1,11 +1,15 @@
-"""Cross-modal attention fusion classifier.
+"""Gated fusion classifier with embedding normalization.
 
-Replaces simple concatenation with a cross-attention mechanism:
-- EEG attends to speech features
-- Speech attends to EEG features
-- Fused representations are combined and classified
+Architecture:
+1. Normalize each modality's embeddings (LayerNorm)
+2. Gating mechanism: gate = σ(W[eeg || speech])
+3. Fused = gate * eeg_proj + (1-gate) * speech_proj
+4. MLP classifier
 
-Also supports modality dropout for robustness.
+Replaces the previous cross-modal attention approach, which was
+unstable on single-vector (B, D) embeddings.  The gating mechanism
+is simpler, more robust, and naturally handles feature-scale differences
+via LayerNorm + learned gates.
 """
 
 from __future__ import annotations
@@ -15,58 +19,77 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class CrossModalAttention(nn.Module):
-    """Bidirectional cross-attention between two modality embeddings."""
+class GatedFusion(nn.Module):
+    """Learnable gating mechanism for multimodal fusion.
 
-    def __init__(self, embed_dim: int, num_heads: int = 4, dropout: float = 0.1) -> None:
+    gate = σ(MLP([eeg || speech]))
+    fused = gate * eeg_proj + (1 - gate) * speech_proj
+    """
+
+    def __init__(
+        self,
+        eeg_dim: int,
+        speech_dim: int,
+        hidden_dim: int = 128,
+        dropout: float = 0.2,
+    ) -> None:
         super().__init__()
-        # EEG attends to speech
-        self.eeg_to_speech = nn.MultiheadAttention(
-            embed_dim, num_heads, dropout=dropout, batch_first=True
+        self.eeg_norm = nn.LayerNorm(eeg_dim)
+        self.speech_norm = nn.LayerNorm(speech_dim)
+
+        # Project both modalities to the same dimension
+        self.fuse_dim = max(eeg_dim, speech_dim)
+        self.eeg_proj = (
+            nn.Linear(eeg_dim, self.fuse_dim)
+            if eeg_dim != self.fuse_dim
+            else nn.Identity()
         )
-        # Speech attends to EEG
-        self.speech_to_eeg = nn.MultiheadAttention(
-            embed_dim, num_heads, dropout=dropout, batch_first=True
+        self.speech_proj = (
+            nn.Linear(speech_dim, self.fuse_dim)
+            if speech_dim != self.fuse_dim
+            else nn.Identity()
         )
-        self.norm_eeg = nn.LayerNorm(embed_dim)
-        self.norm_speech = nn.LayerNorm(embed_dim)
+
+        # Gating network
+        self.gate_net = nn.Sequential(
+            nn.Linear(self.fuse_dim * 2, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, self.fuse_dim),
+            nn.Sigmoid(),
+        )
 
     def forward(
         self, eeg_emb: torch.Tensor, speech_emb: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """
         Args:
-            eeg_emb: ``(B, D)`` or ``(B, 1, D)``
-            speech_emb: ``(B, D)`` or ``(B, 1, D)``
+            eeg_emb: ``(B, eeg_dim)``
+            speech_emb: ``(B, speech_dim)``
 
         Returns:
-            Attended (eeg, speech) both ``(B, D)``
+            Fused representation ``(B, fuse_dim)``
         """
-        # Add sequence dim if needed
-        if eeg_emb.ndim == 2:
-            eeg_emb = eeg_emb.unsqueeze(1)
-        if speech_emb.ndim == 2:
-            speech_emb = speech_emb.unsqueeze(1)
+        eeg = self.eeg_norm(eeg_emb)
+        speech = self.speech_norm(speech_emb)
 
-        # Cross-attention
-        eeg_attended, _ = self.eeg_to_speech(eeg_emb, speech_emb, speech_emb)
-        speech_attended, _ = self.speech_to_eeg(speech_emb, eeg_emb, eeg_emb)
+        eeg_p = self.eeg_proj(eeg)
+        speech_p = self.speech_proj(speech)
 
-        # Residual + norm
-        eeg_out = self.norm_eeg(eeg_emb + eeg_attended).squeeze(1)
-        speech_out = self.norm_speech(speech_emb + speech_attended).squeeze(1)
+        combined = torch.cat([eeg_p, speech_p], dim=1)
+        gate = self.gate_net(combined)
 
-        return eeg_out, speech_out
+        fused = gate * eeg_p + (1 - gate) * speech_p
+        return fused
 
 
 class FusionClassifier(nn.Module):
-    """Cross-modal attention fusion: EEG + speech → class logits.
+    """Gated fusion classifier: EEG + speech → class logits.
 
     Architecture:
-    1. Project each modality to shared dim (if different)
-    2. Cross-modal attention (EEG ↔ speech)
-    3. Concatenate attended features
-    4. MLP classifier
+    1. Normalize + project each modality embedding
+    2. Gated fusion (learnable gate)
+    3. MLP classifier with BatchNorm + Dropout
     """
 
     def __init__(
@@ -75,40 +98,34 @@ class FusionClassifier(nn.Module):
         speech_embed_dim: int = 128,
         hidden_dims: list[int] | None = None,
         num_classes: int = 4,
-        dropout: list[float] | None = None,
-        modality_dropout_prob: float = 0.2,
-        n_attn_heads: int = 4,
+        dropout: list[float] | float | None = None,
+        modality_dropout_prob: float = 0.1,
+        n_attn_heads: int = 4,  # kept for config backward-compat, unused
     ) -> None:
         super().__init__()
         if hidden_dims is None:
             hidden_dims = [128, 64]
         if dropout is None:
-            dropout = [0.5, 0.3]
+            dropout = [0.4, 0.3]
+        if isinstance(dropout, (int, float)):
+            dropout = [float(dropout)] * len(hidden_dims)
 
         self.modality_dropout_prob = modality_dropout_prob
         self.eeg_embed_dim = eeg_embed_dim
         self.speech_embed_dim = speech_embed_dim
 
-        # Project to common dim for cross-attention
-        attn_dim = max(eeg_embed_dim, speech_embed_dim)
-        self.eeg_proj = (
-            nn.Linear(eeg_embed_dim, attn_dim) if eeg_embed_dim != attn_dim
-            else nn.Identity()
-        )
-        self.speech_proj = (
-            nn.Linear(speech_embed_dim, attn_dim) if speech_embed_dim != attn_dim
-            else nn.Identity()
+        # Gated fusion
+        self.gated_fusion = GatedFusion(
+            eeg_embed_dim,
+            speech_embed_dim,
+            hidden_dim=hidden_dims[0] if hidden_dims else 128,
+            dropout=dropout[0] if dropout else 0.3,
         )
 
-        # Cross-modal attention
-        self.cross_attn = CrossModalAttention(
-            attn_dim, num_heads=n_attn_heads, dropout=dropout[0] if dropout else 0.3
-        )
-
-        # MLP classifier on concatenated attended features
-        input_dim = attn_dim * 2
+        # MLP classifier
+        fuse_dim = self.gated_fusion.fuse_dim
         layers: list[nn.Module] = []
-        in_dim = input_dim
+        in_dim = fuse_dim
         for h_dim, drop in zip(hidden_dims, dropout):
             layers.extend([
                 nn.Linear(in_dim, h_dim),
@@ -117,7 +134,6 @@ class FusionClassifier(nn.Module):
                 nn.Dropout(drop),
             ])
             in_dim = h_dim
-
         layers.append(nn.Linear(in_dim, num_classes))
         self.classifier = nn.Sequential(*layers)
 
@@ -142,13 +158,5 @@ class FusionClassifier(nn.Module):
             elif r < self.modality_dropout_prob:
                 speech_embedding = torch.zeros_like(speech_embedding)
 
-        # Project to shared dim
-        eeg_proj = self.eeg_proj(eeg_embedding)
-        speech_proj = self.speech_proj(speech_embedding)
-
-        # Cross-modal attention
-        eeg_attended, speech_attended = self.cross_attn(eeg_proj, speech_proj)
-
-        # Fuse and classify
-        fused = torch.cat([eeg_attended, speech_attended], dim=1)
+        fused = self.gated_fusion(eeg_embedding, speech_embedding)
         return self.classifier(fused)

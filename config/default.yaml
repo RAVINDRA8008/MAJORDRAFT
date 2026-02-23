@@ -94,6 +94,7 @@ model:
     batch_size: 128
     lr: 0.001
     patience: 10             # early stopping patience
+    focal_gamma: 2.0         # focal loss gamma for class imbalance
 
 # ------ Reinforcement Learning ------
 rl:
@@ -101,14 +102,16 @@ rl:
   max_ratio: 1.0
   max_steps: 50
   hidden_dim: 64
-  lr_actor: 0.0003
+  lr_actor: 0.00006        # reduced 5× for stable fine-tuning
   lr_critic: 0.001
   gamma: 0.99
   gae_lambda: 0.95
   clip_eps: 0.2
   entropy_coeff: 0.01
   update_epochs: 4
-  ppo_update_every: 5
+  ppo_update_every: 3      # update every 3 steps for smoother learning
+  min_ratio: 0.2            # lower bound on augmentation ratio
+  max_ratio_bound: 0.6      # upper bound on augmentation ratio
 
 # ------ Training ------
 training:
