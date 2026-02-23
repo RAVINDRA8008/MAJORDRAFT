@@ -109,13 +109,27 @@ def main() -> None:
         print("WARNING: No fusion checkpoint found — using random weights")
     fusion.eval()
 
-    # Encode & predict
+    # Encode in batches to avoid OOM
+    def _encode_batched(encoder, data, batch_size=512):
+        parts = []
+        t = torch.as_tensor(data, dtype=torch.float32)
+        for i in range(0, len(t), batch_size):
+            parts.append(encoder(t[i : i + batch_size].to(device)).cpu())
+        return torch.cat(parts, dim=0)
+
     with torch.no_grad():
-        eeg_emb = eeg_enc(torch.as_tensor(eeg_Xv, dtype=torch.float32).to(device))
-        sp_emb = speech_enc(torch.as_tensor(sp_Xv, dtype=torch.float32).to(device))
+        eeg_emb = _encode_batched(eeg_enc, eeg_Xv)
+        sp_emb = _encode_batched(speech_enc, sp_Xv)
         n = min(len(eeg_emb), len(sp_emb))
-        logits = fusion(eeg_emb[:n], sp_emb[:n])
-        preds = logits.argmax(1).cpu().numpy()
+        # Predict in batches too
+        all_preds = []
+        for i in range(0, n, 512):
+            logits = fusion(
+                eeg_emb[i : i + 512].to(device),
+                sp_emb[i : i + 512].to(device),
+            )
+            all_preds.append(logits.argmax(1).cpu())
+        preds = torch.cat(all_preds).numpy()
 
     labels = eeg_yv[:n]
     metrics = compute_all_metrics(labels, preds)

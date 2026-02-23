@@ -28,10 +28,10 @@ class ChannelAttention(nn.Module):
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ff = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 4),
+            nn.Linear(embed_dim, embed_dim * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Linear(embed_dim * 2, embed_dim),
             nn.Dropout(dropout),
         )
 

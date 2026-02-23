@@ -77,12 +77,21 @@ def main() -> None:
         speech_enc.load_state_dict(torch.load(sp_ckpt, map_location=device))
     speech_enc.eval()
 
-    # Encode
+    # Encode in batches to avoid OOM
+    def _encode_batched(encoder, data, batch_size=512):
+        """Encode data in chunks to stay within GPU memory."""
+        parts = []
+        t = torch.as_tensor(data, dtype=torch.float32)
+        for i in range(0, len(t), batch_size):
+            chunk = t[i : i + batch_size].to(device)
+            parts.append(encoder(chunk).cpu())
+        return torch.cat(parts, dim=0)
+
     with torch.no_grad():
-        eeg_emb_t = eeg_enc(torch.as_tensor(eeg_Xt, dtype=torch.float32).to(device)).cpu()
-        eeg_emb_v = eeg_enc(torch.as_tensor(eeg_Xv, dtype=torch.float32).to(device)).cpu()
-        sp_emb_t = speech_enc(torch.as_tensor(sp_Xt, dtype=torch.float32).to(device)).cpu()
-        sp_emb_v = speech_enc(torch.as_tensor(sp_Xv, dtype=torch.float32).to(device)).cpu()
+        eeg_emb_t = _encode_batched(eeg_enc, eeg_Xt)
+        eeg_emb_v = _encode_batched(eeg_enc, eeg_Xv)
+        sp_emb_t = _encode_batched(speech_enc, sp_Xt)
+        sp_emb_v = _encode_batched(speech_enc, sp_Xv)
 
     n_t = min(len(eeg_emb_t), len(sp_emb_t))
     n_v = min(len(eeg_emb_v), len(sp_emb_v))
