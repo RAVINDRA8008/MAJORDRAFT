@@ -61,6 +61,7 @@ def main() -> None:
         input_dim=cfg.model.eeg_encoder.input_dim,
         hidden_dims=list(cfg.model.eeg_encoder.hidden_dims),
         embedding_dim=cfg.model.eeg_encoder.embedding_dim,
+        dropout=cfg.model.eeg_encoder.dropout,
     ).to(device)
     eeg_ckpt = ckpt / "eeg" / "eeg_encoder_final.pt"
     if eeg_ckpt.exists():
@@ -102,10 +103,16 @@ def main() -> None:
 
     # Plot
     out = Path(paths["outputs"])
-    plot_loss_curves(history["train_loss"], save_path=str(out / "fusion_loss.png"))
+    plot_loss_curves(
+        history["train_loss"],
+        history.get("val_loss", []),
+        title="Fusion Loss",
+        save_path=str(out / "fusion_loss.png"),
+    )
     plot_accuracy_curves(
         history["train_acc"],
         history["val_acc"],
+        title="Fusion Accuracy",
         save_path=str(out / "fusion_acc.png"),
     )
     print("Fusion training complete. Checkpoint:", save_dir)

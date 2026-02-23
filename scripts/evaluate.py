@@ -34,6 +34,8 @@ from src.evaluation.metrics import compute_all_metrics
 from src.evaluation.report_generator import generate_report
 from src.utils.visualization import plot_confusion_matrix, plot_tsne
 
+LABEL_NAMES = ["Angry", "Happy", "Sad", "Neutral"]
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate AMERS model")
@@ -65,25 +67,32 @@ def main() -> None:
     )
 
     # Load models
+    ecfg = cfg.model.eeg_encoder
     eeg_enc = EEGEncoder(
-        input_dim=cfg.model.eeg_encoder.input_dim,
-        hidden_dims=list(cfg.model.eeg_encoder.hidden_dims),
-        embedding_dim=cfg.model.eeg_encoder.embedding_dim,
+        input_dim=ecfg.input_dim,
+        hidden_dims=list(ecfg.hidden_dims),
+        embedding_dim=ecfg.embedding_dim,
+        dropout=ecfg.dropout,
     ).to(device)
     eeg_enc.load_state_dict(torch.load(ckpt / "eeg" / "eeg_encoder_final.pt", map_location=device))
     eeg_enc.eval()
 
+    scfg = cfg.model.speech_encoder
     speech_enc = SpeechEncoder(
-        n_features=cfg.model.speech_encoder.n_mfcc,
-        embedding_dim=cfg.model.speech_encoder.embedding_dim,
+        n_features=scfg.n_mfcc,
+        embedding_dim=scfg.embedding_dim,
     ).to(device)
     speech_enc.load_state_dict(torch.load(ckpt / "speech" / "speech_encoder_final.pt", map_location=device))
     speech_enc.eval()
 
+    fcfg = cfg.model.fusion
     fusion = FusionClassifier(
-        eeg_embed_dim=cfg.model.fusion.eeg_dim,
-        speech_embed_dim=cfg.model.fusion.speech_dim,
+        eeg_embed_dim=fcfg.eeg_dim,
+        speech_embed_dim=fcfg.speech_dim,
+        hidden_dims=list(fcfg.hidden_dims),
         num_classes=cfg.model.num_classes,
+        dropout=[fcfg.dropout, fcfg.dropout] if not isinstance(fcfg.dropout, list) else list(fcfg.dropout),
+        modality_dropout_prob=fcfg.modality_dropout,
     ).to(device)
     # Load best RL checkpoint if available, else baseline
     rl_path = ckpt / "rl" / "best_fusion.pt"
@@ -91,9 +100,13 @@ def main() -> None:
     if rl_path.exists():
         sd = torch.load(rl_path, map_location=device)
         fusion.load_state_dict(sd.get("fusion", sd))
+        print(f"Loaded RL-optimised fusion from {rl_path}")
     elif bl_path.exists():
         sd = torch.load(bl_path, map_location=device)
         fusion.load_state_dict(sd.get("fusion", sd))
+        print(f"Loaded baseline fusion from {bl_path}")
+    else:
+        print("WARNING: No fusion checkpoint found — using random weights")
     fusion.eval()
 
     # Encode & predict
@@ -107,13 +120,21 @@ def main() -> None:
     labels = eeg_yv[:n]
     metrics = compute_all_metrics(labels, preds)
 
-    print("\n" + metrics["report_str"])
+    print("\n" + "=" * 60)
+    print("AMERS EVALUATION RESULTS")
+    print("=" * 60)
+    print(metrics["report_str"])
+    print(f"Overall accuracy:  {metrics['accuracy']:.4f}")
+    print(f"Macro F1:          {metrics['f1_macro']:.4f}")
+    print(f"Weighted F1:       {metrics['f1_weighted']:.4f}")
+    print(f"Cohen's Kappa:     {metrics['cohens_kappa']:.4f}")
+    print("=" * 60)
 
     # Plots
     plot_confusion_matrix(
         labels,
         preds,
-        labels=["Happy", "Sad", "Angry", "Neutral"],
+        labels=LABEL_NAMES,
         save_path=str(out / "confusion_matrix.png"),
     )
 

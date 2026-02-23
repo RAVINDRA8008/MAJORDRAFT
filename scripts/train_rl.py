@@ -65,6 +65,7 @@ def main() -> None:
         input_dim=cfg.model.eeg_encoder.input_dim,
         hidden_dims=list(cfg.model.eeg_encoder.hidden_dims),
         embedding_dim=cfg.model.eeg_encoder.embedding_dim,
+        dropout=cfg.model.eeg_encoder.dropout,
     )
     eeg_enc.load_state_dict(torch.load(ckpt / "eeg" / "eeg_encoder_final.pt", map_location="cpu"))
 
@@ -74,10 +75,14 @@ def main() -> None:
     )
     speech_enc.load_state_dict(torch.load(ckpt / "speech" / "speech_encoder_final.pt", map_location="cpu"))
 
+    fcfg = cfg.model.fusion
     fusion = FusionClassifier(
-        eeg_embed_dim=cfg.model.fusion.eeg_dim,
-        speech_embed_dim=cfg.model.fusion.speech_dim,
+        eeg_embed_dim=fcfg.eeg_dim,
+        speech_embed_dim=fcfg.speech_dim,
+        hidden_dims=list(fcfg.hidden_dims),
         num_classes=cfg.model.num_classes,
+        dropout=[fcfg.dropout, fcfg.dropout] if not isinstance(fcfg.dropout, list) else list(fcfg.dropout),
+        modality_dropout_prob=fcfg.modality_dropout,
     )
     # Optionally load warm-up checkpoint
     warmup_path = ckpt / "fusion" / "best_fusion_baseline.pt"
