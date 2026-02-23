@@ -120,7 +120,6 @@ def main() -> None:
     params = list(encoder.parameters()) + list(head.parameters())
     optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss(
-        weight=class_weights if use_balanced else None,
         label_smoothing=0.1,
     )
 
