@@ -301,3 +301,43 @@ class ConditionalGAN:
         else:
             # Legacy: flat state dict is generator-only
             self.generator.load_state_dict(state)
+
+    # ------------------------------------------------------------------
+    # nn.Module-like interface (needed by RLTrainer and other callers)
+    # ------------------------------------------------------------------
+    def to(self, device: torch.device | str) -> "ConditionalGAN":
+        """Move generator and discriminator to *device*."""
+        self.device = torch.device(device) if isinstance(device, str) else device
+        self.generator = self.generator.to(self.device)
+        self.discriminator = self.discriminator.to(self.device)
+        return self
+
+    def train(self, mode: bool = True) -> "ConditionalGAN":
+        """Set generator and discriminator to training mode."""
+        self.generator.train(mode)
+        self.discriminator.train(mode)
+        return self
+
+    def eval(self) -> "ConditionalGAN":
+        """Set generator and discriminator to evaluation mode."""
+        return self.train(False)
+
+    def parameters(self):
+        """Yield all parameters from generator and discriminator."""
+        yield from self.generator.parameters()
+        yield from self.discriminator.parameters()
+
+    def generate_from_labels(self, labels: torch.Tensor) -> torch.Tensor:
+        """Generate one synthetic sample per label in *labels*.
+
+        Args:
+            labels: ``(N,)`` integer class-label tensor.
+
+        Returns:
+            ``(N, feature_dim)`` synthetic features on the same device.
+        """
+        self.generator.eval()
+        z = torch.randn(len(labels), self.latent_dim, device=labels.device)
+        fake = self.generator(z, labels)
+        self.generator.train()
+        return fake

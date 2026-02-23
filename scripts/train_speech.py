@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Pre-train the speech (CNN-LSTM) encoder on IEMOCAP features."""
+"""Pre-train the speech (CNN-LSTM) encoder on IEMOCAP features.
+
+Autonomous pipeline with overfitting detection, early stopping,
+regularisation auto-adjustment, best-checkpoint selection, and
+training report generation.
+"""
 
 from __future__ import annotations
 
@@ -33,7 +38,7 @@ def main() -> None:
     paths = get_paths(cfg)
     ensure_dirs(paths)
 
-    # Load data
+    # ---- Load data ----
     loader = IEMOCAPLoader(processed_dir=paths["iemocap_processed"])
     features, labels, _ = loader.load_all()
 
@@ -46,20 +51,28 @@ def main() -> None:
     X_val = torch.as_tensor(X_val, dtype=torch.float32)
     y_val = torch.as_tensor(y_val, dtype=torch.long)
 
-    # Train
+    # ---- Train ----
     save_dir = Path(paths["checkpoints"]) / "speech"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     trainer = SpeechTrainer(cfg)
     history = trainer.fit(X_train, y_train, X_val, y_val, save_dir=save_dir)
 
-    # Save
+    # ---- Save final encoder (from best checkpoint, already restored) ----
     torch.save(trainer.encoder.state_dict(), save_dir / "speech_encoder_final.pt")
 
-    # Plot
+    # ---- Save report ----
     out = Path(paths["outputs"])
+    report = history.get("_report")
+    if report is not None:
+        report_path = out / "speech_training_report.txt"
+        report_path.write_text(report.render(), encoding="utf-8")
+        print(f"\nTraining report saved: {report_path}")
+
+    # ---- Plots ----
     plot_loss_curves(
         history["train_loss"],
+        val_losses=history.get("val_loss"),
         title="Speech Encoder Pre-Training Loss",
         save_path=str(out / "speech_loss.png"),
     )
@@ -69,6 +82,14 @@ def main() -> None:
         title="Speech Encoder Accuracy",
         save_path=str(out / "speech_acc.png"),
     )
+
+    # ---- Summary ----
+    if report is not None:
+        print(f"\nBest val accuracy: {report.best_val_acc:.4f} at epoch {report.best_epoch}")
+        if report.early_stopped:
+            print(f"Early stopped after {report.total_epochs_run} epochs.")
+        if report.overfitting_detected:
+            print(f"Overfitting detected at epoch {report.overfitting_epoch} — auto-corrected.")
     print("Speech pre-training complete. Checkpoint:", save_dir)
 
 

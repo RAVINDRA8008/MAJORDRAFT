@@ -103,7 +103,9 @@ class RLTrainer:
 
         # Freeze GAN generator, EEG & speech encoders
         self.gan.eval()
-        for p in self.gan.parameters():
+        for p in self.gan.generator.parameters():
+            p.requires_grad = False
+        for p in self.gan.discriminator.parameters():
             p.requires_grad = False
         self.eeg_encoder.eval()
         for p in self.eeg_encoder.parameters():
@@ -131,7 +133,7 @@ class RLTrainer:
             syn_labels = eeg_labels[
                 torch.randint(0, len(eeg_labels), (n_synthetic,))
             ].to(self.device)
-            syn_features = self.gan.generate(syn_labels).detach()
+            syn_features = self.gan.generate_from_labels(syn_labels).detach()
 
             # 3. Train fusion for one epoch
             train_loss = self._fusion_epoch(
