@@ -223,6 +223,15 @@ class RLTrainer:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _encode_batched(self, encoder: torch.nn.Module, data: torch.Tensor,
+                        batch_size: int = 512) -> torch.Tensor:
+        """Encode data in chunks to avoid OOM with attention models."""
+        parts: list[torch.Tensor] = []
+        for i in range(0, len(data), batch_size):
+            chunk = data[i : i + batch_size].to(self.device)
+            parts.append(encoder(chunk).cpu())
+        return torch.cat(parts, dim=0)
+
     def _fusion_epoch(
         self,
         eeg_feat: torch.Tensor,
@@ -238,21 +247,19 @@ class RLTrainer:
         self.fusion.train()
 
         # Combine real + synthetic EEG
-        all_eeg = torch.cat([eeg_feat.to(self.device), syn_feat], dim=0)
-        all_eeg_lbl = torch.cat([eeg_lbl.to(self.device), syn_lbl], dim=0)
+        all_eeg = torch.cat([eeg_feat, syn_feat.cpu()], dim=0)
+        all_eeg_lbl = torch.cat([eeg_lbl, syn_lbl.cpu()], dim=0)
 
-        # Encode
+        # Encode in batches to avoid OOM
         with torch.no_grad():
-            eeg_emb = self.eeg_encoder(all_eeg)
-            # Match speech samples to EEG (simple repeat/truncate)
-            sp = speech_feat.to(self.device)
-            speech_emb = self.speech_encoder(sp)
+            eeg_emb = self._encode_batched(self.eeg_encoder, all_eeg)
+            speech_emb = self._encode_batched(self.speech_encoder, speech_feat)
 
         # Align lengths: take min(len(eeg_emb), len(speech_emb))
         n = min(len(eeg_emb), len(speech_emb))
-        eeg_emb_batch = eeg_emb[:n]
-        speech_emb_batch = speech_emb[:n]
-        labels_batch = all_eeg_lbl[:n]
+        eeg_emb_batch = eeg_emb[:n].to(self.device)
+        speech_emb_batch = speech_emb[:n].to(self.device)
+        labels_batch = all_eeg_lbl[:n].to(self.device)
 
         # Forward
         logits = self.fusion(eeg_emb_batch, speech_emb_batch)
@@ -279,11 +286,11 @@ class RLTrainer:
             ``(accuracy, loss, per_class_f1)``
         """
         self.fusion.eval()
-        eeg_emb = self.eeg_encoder(eeg_val.to(self.device))
-        speech_emb = self.speech_encoder(speech_val.to(self.device))
+        eeg_emb = self._encode_batched(self.eeg_encoder, eeg_val)
+        speech_emb = self._encode_batched(self.speech_encoder, speech_val)
 
         n = min(len(eeg_emb), len(speech_emb))
-        logits = self.fusion(eeg_emb[:n], speech_emb[:n])
+        logits = self.fusion(eeg_emb[:n].to(self.device), speech_emb[:n].to(self.device))
         labels = eeg_val_lbl[:n].to(self.device)
 
         loss = criterion(logits, labels).item()
