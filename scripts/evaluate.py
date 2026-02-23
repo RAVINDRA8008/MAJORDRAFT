@@ -142,7 +142,7 @@ def main() -> None:
     print(f"Overall accuracy:  {metrics['accuracy']:.4f}")
     print(f"Macro F1:          {metrics['f1_macro']:.4f}")
     print(f"Weighted F1:       {metrics['f1_weighted']:.4f}")
-    print(f"Cohen's Kappa:     {metrics['cohens_kappa']:.4f}")
+    print(f"Cohen's Kappa:     {metrics['kappa']:.4f}")
     print("=" * 60)
 
     # Plots
