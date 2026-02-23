@@ -121,12 +121,13 @@ def main() -> None:
         eeg_emb = _encode_batched(eeg_enc, eeg_Xv)
         sp_emb = _encode_batched(speech_enc, sp_Xv)
         n = min(len(eeg_emb), len(sp_emb))
-        # Predict in batches too
+        # Predict in batches (cap both slices to n to avoid size mismatch)
         all_preds = []
         for i in range(0, n, 512):
+            end = min(i + 512, n)
             logits = fusion(
-                eeg_emb[i : i + 512].to(device),
-                sp_emb[i : i + 512].to(device),
+                eeg_emb[i:end].to(device),
+                sp_emb[i:end].to(device),
             )
             all_preds.append(logits.argmax(1).cpu())
         preds = torch.cat(all_preds).numpy()
