@@ -70,7 +70,7 @@ class TransformerFusionTrainer:
         save_dir: str | Path | None = None,
     ) -> dict[str, list]:
         from collections import Counter
-        from torch.cuda.amp import GradScaler, autocast
+        from torch.amp import GradScaler, autocast
         from torch.utils.data import DataLoader
         import torch.nn as nn
 
@@ -91,7 +91,7 @@ class TransformerFusionTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs, eta_min=1e-6,
         )
-        scaler = GradScaler(enabled=self.use_amp)
+        scaler = GradScaler('cuda', enabled=self.use_amp)
 
         train_ds = LabelAlignedDataset(
             eeg_emb, eeg_labels, speech_emb, speech_labels,
@@ -119,7 +119,7 @@ class TransformerFusionTrainer:
                 sp_b = sp_b.to(self.device, non_blocking=True)
                 lbl_b = lbl_b.to(self.device, non_blocking=True)
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     logits = model(eeg_b, sp_b)
                     loss = criterion(logits, lbl_b)
 
@@ -235,20 +235,28 @@ def main() -> None:
     for eeg_ckpt_name in ["v3/eeg_encoder_dann.pt", "v3/eeg_encoder_contrastive.pt", "eeg/eeg_encoder_final.pt"]:
         p = ckpt / eeg_ckpt_name
         if p.exists():
-            eeg_enc.load_state_dict(torch.load(p, map_location=device))
-            print(f"Loaded EEG encoder from {p}")
-            break
+            try:
+                eeg_enc.load_state_dict(torch.load(p, map_location=device))
+                print(f"Loaded EEG encoder from {p}")
+                break
+            except RuntimeError:
+                print(f"  SKIP {eeg_ckpt_name}: architecture mismatch (retrain needed)")
+                continue
     else:
-        print("WARNING: No EEG encoder checkpoint found")
+        print("WARNING: No compatible EEG encoder checkpoint found")
 
     for sp_ckpt_name in ["v3/speech_encoder_dann.pt", "v3/speech_encoder_contrastive.pt", "speech/speech_encoder_final.pt"]:
         p = ckpt / sp_ckpt_name
         if p.exists():
-            speech_enc.load_state_dict(torch.load(p, map_location=device))
-            print(f"Loaded speech encoder from {p}")
-            break
+            try:
+                speech_enc.load_state_dict(torch.load(p, map_location=device))
+                print(f"Loaded speech encoder from {p}")
+                break
+            except RuntimeError:
+                print(f"  SKIP {sp_ckpt_name}: architecture mismatch (retrain needed)")
+                continue
     else:
-        print("WARNING: No speech encoder checkpoint found")
+        print("WARNING: No compatible speech encoder checkpoint found")
 
     eeg_enc.eval()
     speech_enc.eval()

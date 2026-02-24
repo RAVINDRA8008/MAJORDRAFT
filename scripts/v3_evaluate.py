@@ -104,9 +104,13 @@ def main() -> None:
     encoder_source = "random"
     for name in ["v3/eeg_encoder_dann.pt", "v3/eeg_encoder_contrastive.pt", "eeg/eeg_encoder_final.pt"]:
         if (ckpt / name).exists():
-            eeg_enc.load_state_dict(torch.load(ckpt / name, map_location=device))
-            encoder_source = name
-            break
+            try:
+                eeg_enc.load_state_dict(torch.load(ckpt / name, map_location=device))
+                encoder_source = name
+                break
+            except RuntimeError as e:
+                print(f"  SKIP {name}: architecture mismatch (retrain needed)")
+                continue
     print(f"EEG encoder: {encoder_source}")
     eeg_enc.eval()
 
@@ -118,9 +122,13 @@ def main() -> None:
     sp_source = "random"
     for name in ["v3/speech_encoder_dann.pt", "v3/speech_encoder_contrastive.pt", "speech/speech_encoder_final.pt"]:
         if (ckpt / name).exists():
-            speech_enc.load_state_dict(torch.load(ckpt / name, map_location=device))
-            sp_source = name
-            break
+            try:
+                speech_enc.load_state_dict(torch.load(ckpt / name, map_location=device))
+                sp_source = name
+                break
+            except RuntimeError as e:
+                print(f"  SKIP {name}: architecture mismatch (retrain needed)")
+                continue
     print(f"Speech encoder: {sp_source}")
     speech_enc.eval()
 
@@ -150,10 +158,14 @@ def main() -> None:
     fusion_source = "random"
     for name in ["v3/best_transformer_fusion.pt", "v3/best_fusion_v3.pt", "rl/best_fusion.pt"]:
         if (ckpt / name).exists():
-            sd = torch.load(ckpt / name, map_location=device)
-            fusion.load_state_dict(sd.get("fusion", sd))
-            fusion_source = name
-            break
+            try:
+                sd = torch.load(ckpt / name, map_location=device)
+                fusion.load_state_dict(sd.get("fusion", sd))
+                fusion_source = name
+                break
+            except RuntimeError:
+                print(f"  SKIP {name}: architecture mismatch (retrain needed)")
+                continue
     print(f"Fusion model: {fusion_source}")
     fusion.eval()
 

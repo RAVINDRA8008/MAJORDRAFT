@@ -37,7 +37,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 
 from src.models.eeg_encoder import EEGEncoder
@@ -284,7 +284,7 @@ class ContrastiveEEGTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs - warmup_epochs, eta_min=1e-6,
         )
-        scaler = GradScaler(enabled=self.use_amp)
+        scaler = GradScaler('cuda', enabled=self.use_amp)
         criterion = NTXentLoss(temperature=self.temperature)
 
         history: dict[str, list[float]] = {"loss": []}
@@ -311,7 +311,7 @@ class ContrastiveEEGTrainer:
                 v1 = v1.to(self.device, non_blocking=True)
                 v2 = v2.to(self.device, non_blocking=True)
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     z1 = self.projector(self.encoder(v1))
                     z2 = self.projector(self.encoder(v2))
                     loss = criterion(z1, z2)

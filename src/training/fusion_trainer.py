@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 from omegaconf import DictConfig
 
@@ -276,7 +276,7 @@ class FusionTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs - warmup_epochs, eta_min=1e-6,
         )
-        scaler = GradScaler(enabled=self.use_amp)
+        scaler = GradScaler('cuda', enabled=self.use_amp)
 
         history: dict[str, list[float]] = {
             "train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [],
@@ -307,7 +307,7 @@ class FusionTrainer:
                 sp_b = sp_b.to(self.device, non_blocking=True)
                 lbl_b = lbl_b.to(self.device, non_blocking=True)
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     logits = self.fusion(eeg_b, sp_b)
                     loss = criterion(logits, lbl_b)
 
@@ -390,7 +390,7 @@ class FusionTrainer:
             eeg_b = eeg_b.to(self.device, non_blocking=True)
             sp_b = sp_b.to(self.device, non_blocking=True)
             lbl_b = lbl_b.to(self.device, non_blocking=True)
-            with autocast(enabled=self.use_amp):
+            with autocast('cuda', enabled=self.use_amp):
                 logits = self.fusion(eeg_b, sp_b)
                 total_loss += criterion(logits, lbl_b).item() * eeg_b.size(0)
             correct += (logits.argmax(1) == lbl_b).sum().item()

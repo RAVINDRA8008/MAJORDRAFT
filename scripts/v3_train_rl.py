@@ -71,9 +71,13 @@ def main() -> None:
     )
     for p in ["v3/eeg_encoder_dann.pt", "v3/eeg_encoder_contrastive.pt", "eeg/eeg_encoder_final.pt"]:
         if (ckpt / p).exists():
-            eeg_enc.load_state_dict(torch.load(ckpt / p, map_location="cpu"))
-            print(f"Loaded EEG encoder: {p}")
-            break
+            try:
+                eeg_enc.load_state_dict(torch.load(ckpt / p, map_location="cpu"))
+                print(f"Loaded EEG encoder: {p}")
+                break
+            except RuntimeError:
+                print(f"  SKIP {p}: architecture mismatch (retrain needed)")
+                continue
 
     speech_enc = SpeechEncoder(
         n_features=scfg.n_mfcc,
@@ -81,9 +85,13 @@ def main() -> None:
     )
     for p in ["v3/speech_encoder_dann.pt", "v3/speech_encoder_contrastive.pt", "speech/speech_encoder_final.pt"]:
         if (ckpt / p).exists():
-            speech_enc.load_state_dict(torch.load(ckpt / p, map_location="cpu"))
-            print(f"Loaded speech encoder: {p}")
-            break
+            try:
+                speech_enc.load_state_dict(torch.load(ckpt / p, map_location="cpu"))
+                print(f"Loaded speech encoder: {p}")
+                break
+            except RuntimeError:
+                print(f"  SKIP {p}: architecture mismatch (retrain needed)")
+                continue
 
     # ── Load transformer fusion (warm start from v3_train_transformer_fusion) ──
     v3 = getattr(cfg, "v3", {})

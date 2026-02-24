@@ -33,7 +33,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Function
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, Dataset
 
 from src.models.eeg_encoder import EEGEncoder
@@ -351,7 +351,7 @@ class DomainAdaptationTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.epochs, eta_min=1e-6,
         )
-        scaler = GradScaler(enabled=self.use_amp)
+        scaler = GradScaler('cuda', enabled=self.use_amp)
 
         emotion_criterion = nn.CrossEntropyLoss(label_smoothing=self.label_smoothing)
         domain_criterion = nn.CrossEntropyLoss()
@@ -384,7 +384,7 @@ class DomainAdaptationTrainer:
                 all_emo_labels = []
                 all_dom_labels = []
 
-                with autocast(enabled=self.use_amp):
+                with autocast('cuda', enabled=self.use_amp):
                     # Process EEG samples
                     if batch["eeg_feats"] is not None:
                         eeg_x = batch["eeg_feats"].to(self.device, non_blocking=True)

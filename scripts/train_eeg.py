@@ -25,7 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.model_selection import train_test_split
 
@@ -235,7 +235,7 @@ def main() -> None:
         optimizer, T_max=epochs - warmup_epochs, eta_min=1e-6
     )
 
-    scaler = GradScaler(enabled=use_amp)
+    scaler = GradScaler('cuda', enabled=use_amp)
 
     # ── Training ──
     history: dict[str, list[float]] = {
@@ -266,7 +266,7 @@ def main() -> None:
         for xb, yb in train_dl:
             xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
 
-            with autocast(enabled=use_amp):
+            with autocast('cuda', enabled=use_amp):
                 if use_mixup and np.random.rand() < 0.5:
                     xb_mix, ya, yb_mix, lam = mixup_batch(xb, yb, mixup_alpha)
                     emb = encoder(xb_mix)
@@ -301,7 +301,7 @@ def main() -> None:
         with torch.no_grad():
             for xb, yb in val_dl:
                 xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
-                with autocast(enabled=use_amp):
+                with autocast('cuda', enabled=use_amp):
                     logits = head(encoder(xb))
                     vloss += criterion(logits, yb).item() * len(xb)
                 vcorrect += (logits.argmax(1) == yb).sum().item()
