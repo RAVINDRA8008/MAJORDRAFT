@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""v5.4 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
+"""v5.5 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
 
-What's new in v5.4
+What's new in v5.5
 ──────────────────
 1. End-to-end training: encoders fine-tuned jointly with CMMA layers
 2. Discriminative LR: encoders get 0.05x LR to preserve representations
 3. Cross-modal mutual attention with gated cross-attention
 4. Emotion-aware gating: per-class modality weights via annealed TF
-5. Embedding Mixup: interpolate embeddings for regularization (v5.4)
-6. Model EMA: exponential moving average of weights (v5.4)
+5. Best-of-two EMA: validate both raw & EMA models, save whichever wins
+6. Confidence penalty: penalise overconfident predictions (-entropy)
 7. Gate diversity loss: prevents modality weight collapse
 
 Usage:
@@ -221,8 +221,8 @@ class CMMATrainer:
         self.aux_loss_weight = _g("aux_loss_weight", 0.2)  # v5.1: auxiliary unimodal loss weight
         self.tf_anneal_epochs = _g("tf_anneal_epochs", 25)  # v5.3: anneal TF from 1→0
         self.gate_div_weight = _g("gate_div_weight", 0.1)  # v5.3: gate diversity loss
-        self.mixup_alpha = _g("mixup_alpha", 0.4)  # v5.4: embedding mixup
-        self.ema_decay = _g("ema_decay", 0.998)  # v5.4: EMA weight averaging
+        self.ema_decay = _g("ema_decay", 0.999)  # v5.5: EMA (best-of-two validation)
+        self.conf_penalty_weight = _g("conf_penalty_weight", 0.1)  # v5.5: confidence penalty
 
     def fit(
         self,
@@ -323,14 +323,14 @@ class CMMATrainer:
         patience_counter = 0
 
         print(f"\n{'='*60}")
-        print(f"  v5.4 CMMA End-to-End Training (mixup + EMA)")
+        print(f"  v5.5 CMMA End-to-End Training (EMA best-of-two + conf penalty)")
         print(f"  Epochs: {self.epochs}, Batch: {self.batch_size}")
         print(f"  CMMA LR: {self.lr}, Encoder LR: {self.lr * self.encoder_lr_factor}")
         print(f"  EAG LR: {self.lr * self.eag_lr_factor}")
         print(f"  Freeze encoders: first {self.freeze_encoder_epochs} epochs")
         print(f"  Warmup: {self.warmup_epochs} epochs, Patience: {self.patience}")
         print(f"  TF anneal: 1.0 → 0.0 over {self.tf_anneal_epochs} epochs")
-        print(f"  Mixup alpha: {self.mixup_alpha}, EMA decay: {self.ema_decay}")
+        print(f"  EMA decay: {self.ema_decay}, Conf penalty: {self.conf_penalty_weight}")
         print(f"  Gate diversity weight: {self.gate_div_weight}")
         print(f"  Aux loss weight: {self.aux_loss_weight}")
         print(f"  Samples/epoch: {self.samples_per_epoch}")
@@ -377,47 +377,34 @@ class CMMATrainer:
                     eeg_emb = eeg_encoder(eeg_raw)
                     sp_emb = speech_encoder(sp_raw)
 
-                    # --- v5.4: Embedding Mixup (50% of batches) ---
-                    do_mixup = (self.mixup_alpha > 0
-                                and torch.rand(1).item() < 0.5)
+                    logits, aux = cmma(
+                        eeg_emb, sp_emb, return_aux=True,
+                        labels=labels, tf_ratio=tf_ratio,
+                    )
 
-                    if do_mixup:
-                        lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
-                        lam = max(lam, 1 - lam)  # dominant stays dominant
-                        perm = torch.randperm(eeg_emb.size(0), device=self.device)
-                        eeg_emb = lam * eeg_emb + (1 - lam) * eeg_emb[perm]
-                        sp_emb = lam * sp_emb + (1 - lam) * sp_emb[perm]
-                        labels_b = labels[perm]
+                    # Main classification loss
+                    loss_main = criterion(logits, labels)
 
-                        # No TF with mixup (labels are mixed)
-                        logits, aux = cmma(eeg_emb, sp_emb, return_aux=True)
-                        loss_main = (lam * criterion(logits, labels)
-                                     + (1 - lam) * criterion(logits, labels_b))
-                        loss_eeg_aux = (lam * criterion(aux['eeg_logits'], labels)
-                                        + (1 - lam) * criterion(aux['eeg_logits'], labels_b))
-                        loss_sp_aux = (lam * criterion(aux['speech_logits'], labels)
-                                       + (1 - lam) * criterion(aux['speech_logits'], labels_b))
-                        loss_probe = (lam * criterion(aux['probe_logits'], labels)
-                                      + (1 - lam) * criterion(aux['probe_logits'], labels_b))
-                    else:
-                        logits, aux = cmma(
-                            eeg_emb, sp_emb, return_aux=True,
-                            labels=labels, tf_ratio=tf_ratio,
-                        )
-                        loss_main = criterion(logits, labels)
-                        loss_eeg_aux = criterion(aux['eeg_logits'], labels)
-                        loss_sp_aux = criterion(aux['speech_logits'], labels)
-                        loss_probe = criterion(aux['probe_logits'], labels)
+                    # Auxiliary unimodal losses
+                    loss_eeg_aux = criterion(aux['eeg_logits'], labels)
+                    loss_sp_aux = criterion(aux['speech_logits'], labels)
+                    loss_probe = criterion(aux['probe_logits'], labels)
 
                     # Gate diversity loss (prevents gate logits from collapsing)
                     loss_div = cmma.emotion_gate.gate_diversity_loss()
+
+                    # v5.5: Confidence penalty — penalise overconfident predictions
+                    # Maximises entropy of output distribution → smoother decision boundary
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    conf_penalty = (log_probs.exp() * log_probs).sum(dim=-1).mean()  # negative entropy
 
                     # Total loss
                     loss = (loss_main
                             + self.aux_loss_weight * loss_eeg_aux
                             + self.aux_loss_weight * loss_sp_aux
                             + 0.1 * loss_probe
-                            + self.gate_div_weight * loss_div)
+                            + self.gate_div_weight * loss_div
+                            + self.conf_penalty_weight * conf_penalty)
 
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
@@ -442,15 +429,7 @@ class CMMATrainer:
                 train_correct += (logits.argmax(1) == labels).sum().item()
                 train_total += eeg_raw.size(0)
 
-            # --- Validate (with EMA weights if enabled) ---
-            if self.ema_decay > 0:
-                _bk_eeg = {k: v.clone() for k, v in eeg_encoder.state_dict().items()}
-                _bk_sp = {k: v.clone() for k, v in speech_encoder.state_dict().items()}
-                _bk_cmma = {k: v.clone() for k, v in cmma.state_dict().items()}
-                eeg_encoder.load_state_dict(ema_eeg.state_dict())
-                speech_encoder.load_state_dict(ema_sp.state_dict())
-                cmma.load_state_dict(ema_cmma.state_dict())
-
+            # --- Validate: raw model ---
             eeg_encoder.eval()
             speech_encoder.eval()
             cmma.eval()
@@ -473,10 +452,47 @@ class CMMATrainer:
                     val_correct += (logits.argmax(1) == labels).sum().item()
                     val_total += eeg_raw.size(0)
 
+            raw_v_acc = val_correct / max(val_total, 1)
+            raw_v_loss = val_loss / max(val_total, 1)
+
+            # --- v5.5: Validate EMA model (best-of-two) ---
+            ema_v_acc = 0.0
+            use_ema = False
+            if self.ema_decay > 0:
+                _bk_eeg = {k: v.clone() for k, v in eeg_encoder.state_dict().items()}
+                _bk_sp = {k: v.clone() for k, v in speech_encoder.state_dict().items()}
+                _bk_cmma = {k: v.clone() for k, v in cmma.state_dict().items()}
+                eeg_encoder.load_state_dict(ema_eeg.state_dict())
+                speech_encoder.load_state_dict(ema_sp.state_dict())
+                cmma.load_state_dict(ema_cmma.state_dict())
+
+                ema_val_correct, ema_val_total = 0, 0
+                with torch.no_grad():
+                    for eeg_raw, sp_raw, labels in val_loader:
+                        eeg_raw = eeg_raw.to(self.device)
+                        sp_raw = sp_raw.to(self.device)
+                        labels = labels.to(self.device)
+                        with autocast("cuda", enabled=self.use_amp):
+                            eeg_emb = eeg_encoder(eeg_raw)
+                            sp_emb = speech_encoder(sp_raw)
+                            logits = cmma(eeg_emb, sp_emb)
+                        ema_val_correct += (logits.argmax(1) == labels).sum().item()
+                        ema_val_total += eeg_raw.size(0)
+
+                ema_v_acc = ema_val_correct / max(ema_val_total, 1)
+                use_ema = ema_v_acc > raw_v_acc
+
+                # Restore raw weights for training
+                eeg_encoder.load_state_dict(_bk_eeg)
+                speech_encoder.load_state_dict(_bk_sp)
+                cmma.load_state_dict(_bk_cmma)
+
+            # Pick the better model's accuracy for this epoch
+            v_acc = max(raw_v_acc, ema_v_acc)
+            v_loss = raw_v_loss  # always use raw loss for monitoring
+
             t_loss = train_loss / max(train_total, 1)
-            v_loss = val_loss / max(val_total, 1)
             t_acc = train_correct / max(train_total, 1)
-            v_acc = val_correct / max(val_total, 1)
 
             history["train_loss"].append(t_loss)
             history["val_loss"].append(v_loss)
@@ -486,11 +502,12 @@ class CMMATrainer:
             lrs = scheduler.get_lr()
             lr_str = f"enc_lr={lrs[0]:.1e} cmma_lr={lrs[1]:.1e} eag_lr={lrs[2]:.1e}"
 
+            ema_tag = " [EMA]" if use_ema else ""
             if epoch % 5 == 0 or epoch == 1 or epoch == self.epochs:
                 print(
                     f"  [{epoch:3d}/{self.epochs}]  "
                     f"train: loss={t_loss:.4f} acc={t_acc:.1%}  "
-                    f"val: loss={v_loss:.4f} acc={v_acc:.1%}  "
+                    f"val: loss={v_loss:.4f} acc={v_acc:.1%}{ema_tag}  "
                     f"tf={tf_ratio:.2f}  {lr_str}"
                 )
 
@@ -500,17 +517,31 @@ class CMMATrainer:
                 if save_dir:
                     sd = Path(save_dir)
                     sd.mkdir(parents=True, exist_ok=True)
-                    # Save everything for end-to-end loading
+                    # v5.5: Save whichever model (raw or EMA) scored higher
+                    if use_ema:
+                        save_eeg_sd = ema_eeg.state_dict()
+                        save_sp_sd = ema_sp.state_dict()
+                        save_cmma_sd = ema_cmma.state_dict()
+                    else:
+                        save_eeg_sd = eeg_encoder.state_dict()
+                        save_sp_sd = speech_encoder.state_dict()
+                        save_cmma_sd = cmma.state_dict()
                     torch.save({
-                        "eeg_encoder": eeg_encoder.state_dict(),
-                        "speech_encoder": speech_encoder.state_dict(),
-                        "cmma_fusion": cmma.state_dict(),
+                        "eeg_encoder": save_eeg_sd,
+                        "speech_encoder": save_sp_sd,
+                        "cmma_fusion": save_cmma_sd,
                         "val_acc": v_acc,
                         "epoch": epoch,
+                        "ema": use_ema,
                     }, sd / "best_cmma_v5.pt")
-                    # Also save modality weights for interpretability
+                    # Show modality weights from saved model
+                    # Temporarily load saved weights to read gate logits
+                    _orig_cmma = {k: v.clone() for k, v in cmma.state_dict().items()}
+                    cmma.load_state_dict(save_cmma_sd)
                     mw = cmma.get_modality_weights()
-                    print(f"    → saved (val_acc={v_acc:.1%}) | "
+                    cmma.load_state_dict(_orig_cmma)  # restore
+                    src = "EMA" if use_ema else "raw"
+                    print(f"    → saved {src} (val_acc={v_acc:.1%}) | "
                           f"modality weights: EEG={mw[:, 0].tolist()}, "
                           f"Speech={mw[:, 1].tolist()}")
             else:
@@ -518,12 +549,6 @@ class CMMATrainer:
                 if patience_counter >= self.patience:
                     print(f"\n  Early stopping at epoch {epoch}")
                     break
-
-            # Restore training weights after EMA-based validation
-            if self.ema_decay > 0:
-                eeg_encoder.load_state_dict(_bk_eeg)
-                speech_encoder.load_state_dict(_bk_sp)
-                cmma.load_state_dict(_bk_cmma)
 
         elapsed = time.time() - t0
         print(f"\n{'='*60}")
