@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""v5.5 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
+"""v5.6 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
 
-What's new in v5.5
+What's new in v5.6
 ──────────────────
 1. End-to-end training: encoders fine-tuned jointly with CMMA layers
 2. Discriminative LR: encoders get 0.05x LR to preserve representations
 3. Cross-modal mutual attention with gated cross-attention
 4. Emotion-aware gating: per-class modality weights via annealed TF
 5. Best-of-two EMA: validate both raw & EMA models, save whichever wins
-6. Confidence penalty: penalise overconfident predictions (-entropy)
+6. Deterministic validation: fixed pre-computed pairs for stable eval
 7. Gate diversity loss: prevents modality weight collapse
 
 Usage:
@@ -59,6 +59,7 @@ class E2ELabelAlignedDataset(Dataset):
 
     For each sample, picks one EEG and one speech sample with the same
     emotion label.  Balances classes by oversampling minority classes.
+    Uses random pairing each call (for training — new pairs each epoch).
     """
 
     def __init__(
@@ -112,6 +113,48 @@ class E2ELabelAlignedDataset(Dataset):
         sp_idx = torch.randint(len(sp_pool), (1,)).item()
 
         return eeg_pool[eeg_idx], sp_pool[sp_idx], c
+
+
+class FixedPairValDataset(Dataset):
+    """Deterministic validation dataset with pre-computed fixed pairs.
+
+    v5.6 fix: random pairing in validation caused noisy accuracy and
+    made raw-vs-EMA comparison unreliable (different data each pass).
+    This dataset generates all pairs once with a fixed seed.
+    """
+
+    def __init__(
+        self,
+        eeg_features: np.ndarray,
+        eeg_labels: np.ndarray,
+        speech_features: np.ndarray,
+        speech_labels: np.ndarray,
+        num_classes: int = 4,
+        samples: int = 2000,
+        seed: int = 42,
+    ):
+        rng = np.random.RandomState(seed)
+        per_class = samples // num_classes
+
+        eeg_list, sp_list, lbl_list = [], [], []
+        for c in range(num_classes):
+            eeg_pool = eeg_features[eeg_labels == c]
+            sp_pool = speech_features[speech_labels == c]
+            eeg_idxs = rng.randint(0, len(eeg_pool), size=per_class)
+            sp_idxs = rng.randint(0, len(sp_pool), size=per_class)
+            eeg_list.append(torch.as_tensor(eeg_pool[eeg_idxs], dtype=torch.float32))
+            sp_list.append(torch.as_tensor(sp_pool[sp_idxs], dtype=torch.float32))
+            lbl_list.append(torch.full((per_class,), c, dtype=torch.long))
+
+        self.eeg = torch.cat(eeg_list, dim=0)
+        self.sp = torch.cat(sp_list, dim=0)
+        self.labels = torch.cat(lbl_list, dim=0)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        return self.eeg[idx], self.sp[idx], self.labels[idx].item()
 
 
 # ======================================================================
@@ -222,7 +265,7 @@ class CMMATrainer:
         self.tf_anneal_epochs = _g("tf_anneal_epochs", 25)  # v5.3: anneal TF from 1→0
         self.gate_div_weight = _g("gate_div_weight", 0.1)  # v5.3: gate diversity loss
         self.ema_decay = _g("ema_decay", 0.999)  # v5.5: EMA (best-of-two validation)
-        self.conf_penalty_weight = _g("conf_penalty_weight", 0.1)  # v5.5: confidence penalty
+        self.label_smoothing = _g("label_smoothing", 0.15)  # v5.6: increased from 0.1
 
     def fit(
         self,
@@ -260,7 +303,8 @@ class CMMATrainer:
             weights[cls] = total / (n_cls * cnt)
 
         criterion = FocalLoss(
-            gamma=2.0, weight=weights.to(self.device), label_smoothing=0.1,
+            gamma=2.0, weight=weights.to(self.device),
+            label_smoothing=self.label_smoothing,
         )
 
         # --- Discriminative learning rates (3 groups) ---
@@ -305,12 +349,13 @@ class CMMATrainer:
             balance_classes=True,
             samples_per_epoch=self.samples_per_epoch,
         )
-        val_ds = E2ELabelAlignedDataset(
+        # v5.6: Deterministic validation — fixed pairs, same data every epoch
+        val_ds = FixedPairValDataset(
             eeg_feat_val, eeg_labels_val,
             sp_feat_val, sp_labels_val,
             num_classes=self.num_classes,
-            balance_classes=False,
-            samples_per_epoch=2000,
+            samples=2000,
+            seed=42,
         )
 
         train_loader = DataLoader(
@@ -323,17 +368,18 @@ class CMMATrainer:
         patience_counter = 0
 
         print(f"\n{'='*60}")
-        print(f"  v5.5 CMMA End-to-End Training (EMA best-of-two + conf penalty)")
+        print(f"  v5.6 CMMA End-to-End Training (deterministic val + EMA)")
         print(f"  Epochs: {self.epochs}, Batch: {self.batch_size}")
         print(f"  CMMA LR: {self.lr}, Encoder LR: {self.lr * self.encoder_lr_factor}")
         print(f"  EAG LR: {self.lr * self.eag_lr_factor}")
         print(f"  Freeze encoders: first {self.freeze_encoder_epochs} epochs")
         print(f"  Warmup: {self.warmup_epochs} epochs, Patience: {self.patience}")
         print(f"  TF anneal: 1.0 → 0.0 over {self.tf_anneal_epochs} epochs")
-        print(f"  EMA decay: {self.ema_decay}, Conf penalty: {self.conf_penalty_weight}")
+        print(f"  EMA decay: {self.ema_decay}, Label smoothing: {self.label_smoothing}")
         print(f"  Gate diversity weight: {self.gate_div_weight}")
         print(f"  Aux loss weight: {self.aux_loss_weight}")
         print(f"  Samples/epoch: {self.samples_per_epoch}")
+        print(f"  Validation: deterministic fixed pairs (2000 samples)")
         print(f"{'='*60}\n")
 
         # Start with encoders frozen
@@ -393,18 +439,12 @@ class CMMATrainer:
                     # Gate diversity loss (prevents gate logits from collapsing)
                     loss_div = cmma.emotion_gate.gate_diversity_loss()
 
-                    # v5.5: Confidence penalty — penalise overconfident predictions
-                    # Maximises entropy of output distribution → smoother decision boundary
-                    log_probs = F.log_softmax(logits, dim=-1)
-                    conf_penalty = (log_probs.exp() * log_probs).sum(dim=-1).mean()  # negative entropy
-
-                    # Total loss
+                    # Total loss (v5.6: removed confidence penalty — it was backwards)
                     loss = (loss_main
                             + self.aux_loss_weight * loss_eeg_aux
                             + self.aux_loss_weight * loss_sp_aux
                             + 0.1 * loss_probe
-                            + self.gate_div_weight * loss_div
-                            + self.conf_penalty_weight * conf_penalty)
+                            + self.gate_div_weight * loss_div)
 
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
@@ -429,18 +469,21 @@ class CMMATrainer:
                 train_correct += (logits.argmax(1) == labels).sum().item()
                 train_total += eeg_raw.size(0)
 
-            # --- Validate: raw model ---
+            # --- Validate: cache batches for fair raw-vs-EMA comparison ---
             eeg_encoder.eval()
             speech_encoder.eval()
             cmma.eval()
 
+            # v5.6: Collect all val batches once so raw and EMA see identical data
+            val_batches = [
+                (eeg_raw.to(self.device), sp_raw.to(self.device), labels.to(self.device))
+                for eeg_raw, sp_raw, labels in val_loader
+            ]
+
             val_loss, val_correct, val_total = 0.0, 0, 0
 
             with torch.no_grad():
-                for eeg_raw, sp_raw, labels in val_loader:
-                    eeg_raw = eeg_raw.to(self.device)
-                    sp_raw = sp_raw.to(self.device)
-                    labels = labels.to(self.device)
+                for eeg_raw, sp_raw, labels in val_batches:
 
                     with autocast("cuda", enabled=self.use_amp):
                         eeg_emb = eeg_encoder(eeg_raw)
@@ -468,10 +511,7 @@ class CMMATrainer:
 
                 ema_val_correct, ema_val_total = 0, 0
                 with torch.no_grad():
-                    for eeg_raw, sp_raw, labels in val_loader:
-                        eeg_raw = eeg_raw.to(self.device)
-                        sp_raw = sp_raw.to(self.device)
-                        labels = labels.to(self.device)
+                    for eeg_raw, sp_raw, labels in val_batches:  # same cached batches
                         with autocast("cuda", enabled=self.use_amp):
                             eeg_emb = eeg_encoder(eeg_raw)
                             sp_emb = speech_encoder(sp_raw)

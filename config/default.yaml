@@ -168,7 +168,7 @@ v3:
     warmup_epochs: 5       # warm-up fusion before RL starts
 
 # ============================================================
-# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.5
+# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.6
 # ============================================================
 v5:
   # --- CMMA architecture ---
@@ -177,7 +177,7 @@ v5:
   n_heads: 4
   n_cmma_layers: 3         # bidirectional cross-attention layers
   ff_dim: 512
-  dropout: 0.15            # v5.2: increased from 0.1 (reduce overfitting)
+  dropout: 0.2             # v5.6: increased from 0.15 (reduce overfitting)
   modality_dropout: 0.05   # v5.1: reduced from 0.1 (was too aggressive)
 
   # --- End-to-end training ---
@@ -186,17 +186,17 @@ v5:
   lr: 0.0003               # CMMA + classifier learning rate
   encoder_lr_factor: 0.05  # v5.1: more conservative (was 0.1)
   eag_lr_factor: 3.0       # v5.1: higher LR for EAG gate params
-  weight_decay: 0.0003     # v5.2: stronger regularization (was 0.0001)
+  weight_decay: 0.0005     # v5.6: increased from 0.0003 (reduce memorisation)
   warmup_epochs: 5         # linear LR warmup before cosine decay
   freeze_encoder_epochs: 8  # v5.1: freeze encoders for first N epochs
-  patience: 20             # v5.5: reverted from 25 (was too lenient)
-  samples_per_epoch: 10000 # v5.5: reverted from 12000
+  patience: 20             # early stopping patience
+  samples_per_epoch: 10000 # training samples per epoch
   grad_clip: 1.0           # gradient clipping max norm
   aux_loss_weight: 0.2     # v5.1: weight for auxiliary unimodal losses
   tf_anneal_epochs: 25     # v5.3: anneal teacher forcing 1.0→0.0 over N epochs
   gate_div_weight: 0.1     # v5.3: gate diversity regularizer weight
   ema_decay: 0.999         # v5.5: EMA decay (best-of-two validation)
-  conf_penalty_weight: 0.1 # v5.5: confidence penalty (entropy maximization)
+  label_smoothing: 0.15    # v5.6: increased from 0.1 (softer targets)
 
 # ------ Logging ------
 logging:
