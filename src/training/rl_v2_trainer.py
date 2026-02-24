@@ -138,6 +138,9 @@ class RLv2Trainer:
         self.device = get_device()
 
         self.gan = gan
+        self.gan.device = self.device
+        self.gan.generator.to(self.device)
+        self.gan.discriminator.to(self.device)
         self.eeg_encoder = eeg_encoder.to(self.device)
         self.speech_encoder = speech_encoder.to(self.device)
         self.fusion = fusion.to(self.device)
