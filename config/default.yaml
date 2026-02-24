@@ -167,6 +167,30 @@ v3:
     fusion_lr: 0.0005
     warmup_epochs: 5       # warm-up fusion before RL starts
 
+# ============================================================
+# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end
+# ============================================================
+v5:
+  # --- CMMA architecture ---
+  n_tokens: 8              # split 128-dim → 8 tokens of 16
+  d_model: 128             # double v4 for richer representations
+  n_heads: 4
+  n_cmma_layers: 3         # bidirectional cross-attention layers
+  ff_dim: 512
+  dropout: 0.1
+  modality_dropout: 0.1    # randomly zero one modality during training
+
+  # --- End-to-end training ---
+  epochs: 80
+  batch_size: 64
+  lr: 0.0003               # CMMA + classifier learning rate
+  encoder_lr_factor: 0.1   # encoder LR = lr × factor (discriminative)
+  weight_decay: 0.0001
+  warmup_epochs: 5         # linear LR warmup before cosine decay
+  patience: 20             # early stopping patience
+  samples_per_epoch: 8000  # label-aligned samples per epoch
+  grad_clip: 1.0           # gradient clipping max norm
+
 # ------ Logging ------
 logging:
   level: INFO
