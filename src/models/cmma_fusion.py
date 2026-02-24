@@ -1,4 +1,4 @@
-"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.1.
+"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.2.
 
 Novel architecture contributions
 ─────────────────────────────────
@@ -159,21 +159,26 @@ class CMMABlock(nn.Module):
 class EmotionAwareGating(nn.Module):
     """Learns per-class modality importance weights via sigmoid gating.
 
-    v5.1 fix: Uses SIGMOID instead of softmax to avoid the dead-gradient
-    zone where equal inputs (0.5, 0.5) produce near-zero gradients.
-    Each class has ONE learnable gate logit:
-        alpha = sigmoid(gate_logit)
-        w_eeg = alpha,  w_speech = 1 - alpha
+    v5.2 fix: Teacher-forced gating + single sigmoid (no double-sigmoid).
 
-    Additionally, an input-dependent gate network adjusts the per-class
-    weights based on the actual features — so the gating is both
-    class-aware AND input-aware.
+    Each class has ONE learnable gate logit.  During TRAINING, the
+    ground-truth label directly indexes the gate logit (teacher forcing),
+    giving every class its own gradient direction.  During INFERENCE,
+    the emotion probe soft-weights the raw logits.
 
-    Forward:
-        1. Estimate preliminary class probs from fused features
-        2. Per-class gate: sigmoid(logit) → EEG weight, 1 - sigmoid → speech
-        3. Input-dependent adjustment via lightweight gate network
-        4. Compute weighted sum: out = w_eeg * eeg + w_speech * speech
+    Only ONE sigmoid is applied (on the raw logit + input adjustment),
+    which avoids the v5.1 double-sigmoid compression that kept weights
+    near 0.50.
+
+    Forward (training with labels):
+        1. base_logit = class_gate_logits[label]   (direct index)
+        2. alpha = sigmoid(base_logit + input_adj) (single sigmoid)
+        3. fused = alpha * eeg + (1 - alpha) * speech
+
+    Forward (inference without labels):
+        1. Probe predicts class probs
+        2. base_logit = sum(prob_c * gate_logit_c) (soft-weight raw logits)
+        3. alpha = sigmoid(base_logit + input_adj) (single sigmoid)
     """
 
     def __init__(
@@ -210,30 +215,39 @@ class EmotionAwareGating(nn.Module):
         self,
         eeg_feat: torch.Tensor,
         speech_feat: torch.Tensor,
+        labels: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Args:
             eeg_feat: (B, d_model) — enhanced EEG representation
             speech_feat: (B, d_model) — enhanced speech representation
+            labels: (B,) int — ground-truth class indices (training only)
+                    If provided, uses teacher-forced gating for strong
+                    per-class gradient.  If None, uses probe soft-selection.
 
         Returns:
             fused: (B, d_model) — emotion-aware fused representation
         """
         combined = torch.cat([eeg_feat, speech_feat], dim=-1)  # (B, 2*d_model)
 
-        # Preliminary emotion estimate
-        emotion_logits = self.emotion_probe(combined)  # (B, num_classes)
-        emotion_probs = F.softmax(emotion_logits, dim=-1)  # (B, num_classes)
-
-        # Per-class EEG weights via sigmoid (strong gradient at 0)
-        class_alpha = torch.sigmoid(self.class_gate_logits)  # (num_classes,)
-
-        # Weighted class gate: (B, num_classes) @ (num_classes,) → (B,)
-        base_alpha = (emotion_probs * class_alpha.unsqueeze(0)).sum(dim=-1, keepdim=True)
-
-        # Input-dependent adjustment
+        # Input-dependent adjustment (shared for both modes)
         input_adj = self.input_gate(combined)  # (B, 1)
-        alpha = torch.sigmoid(base_alpha + input_adj)  # (B, 1) — final EEG weight
+
+        if labels is not None:
+            # ── Teacher forcing: directly index the raw gate logit ──
+            # Each class gets its OWN gradient direction
+            base_logit = self.class_gate_logits[labels].unsqueeze(-1)  # (B, 1)
+        else:
+            # ── Inference: soft-weight RAW logits via probe ──
+            emotion_logits = self.emotion_probe(combined)  # (B, C)
+            emotion_probs = F.softmax(emotion_logits, dim=-1)  # (B, C)
+            # Weighted sum of RAW logits (NOT sigmoid — avoids double-sigmoid)
+            base_logit = (emotion_probs * self.class_gate_logits.unsqueeze(0)).sum(
+                dim=-1, keepdim=True
+            )  # (B, 1)
+
+        # Single sigmoid: raw logit + adjustment → [0, 1]
+        alpha = torch.sigmoid(base_logit + input_adj)  # (B, 1)
 
         # Emotion-aware fusion
         fused = alpha * eeg_feat + (1 - alpha) * speech_feat  # (B, d_model)
@@ -386,12 +400,14 @@ class CMMAFusionClassifier(nn.Module):
         eeg_embedding: torch.Tensor,
         speech_embedding: torch.Tensor,
         return_aux: bool = False,
+        labels: Optional[torch.Tensor] = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         """
         Args:
             eeg_embedding: (B, eeg_embed_dim) — from EEG encoder
             speech_embedding: (B, speech_embed_dim) — from Speech encoder
             return_aux: if True, also return auxiliary logits dict
+            labels: (B,) int — ground-truth labels for teacher-forced gating
 
         Returns:
             logits: (B, num_classes)
@@ -428,7 +444,7 @@ class CMMAFusionClassifier(nn.Module):
         sp_cls = self.sp_out_norm(sp_tokens[:, 0, :])      # (B, d_model)
 
         # --- Emotion-Aware Gating ---
-        fused = self.emotion_gate(eeg_cls, sp_cls)  # (B, d_model)
+        fused = self.emotion_gate(eeg_cls, sp_cls, labels=labels)  # (B, d_model)
 
         # --- Classify ---
         logits = self.classifier(fused)  # (B, num_classes)

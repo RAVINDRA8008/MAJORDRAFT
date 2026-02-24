@@ -168,7 +168,7 @@ v3:
     warmup_epochs: 5       # warm-up fusion before RL starts
 
 # ============================================================
-# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.1
+# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.2
 # ============================================================
 v5:
   # --- CMMA architecture ---
@@ -177,7 +177,7 @@ v5:
   n_heads: 4
   n_cmma_layers: 3         # bidirectional cross-attention layers
   ff_dim: 512
-  dropout: 0.1
+  dropout: 0.15            # v5.2: increased from 0.1 (reduce overfitting)
   modality_dropout: 0.05   # v5.1: reduced from 0.1 (was too aggressive)
 
   # --- End-to-end training ---
@@ -186,7 +186,7 @@ v5:
   lr: 0.0003               # CMMA + classifier learning rate
   encoder_lr_factor: 0.05  # v5.1: more conservative (was 0.1)
   eag_lr_factor: 3.0       # v5.1: higher LR for EAG gate params
-  weight_decay: 0.0001
+  weight_decay: 0.0003     # v5.2: stronger regularization (was 0.0001)
   warmup_epochs: 5         # linear LR warmup before cosine decay
   freeze_encoder_epochs: 8  # v5.1: freeze encoders for first N epochs
   patience: 20             # early stopping patience

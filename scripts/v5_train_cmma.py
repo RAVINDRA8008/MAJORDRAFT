@@ -183,7 +183,7 @@ class CMMATrainer:
         self.patience = _g("patience", 20)
         self.warmup_epochs = _g("warmup_epochs", 5)
         self.freeze_encoder_epochs = _g("freeze_encoder_epochs", 8)  # v5.1: freeze encoders initially
-        self.weight_decay = _g("weight_decay", 1e-4)
+        self.weight_decay = _g("weight_decay", 3e-4)  # v5.2: stronger regularization
         self.samples_per_epoch = _g("samples_per_epoch", 10000)  # v5.1: more samples
         self.grad_clip = _g("grad_clip", 1.0)
         self.aux_loss_weight = _g("aux_loss_weight", 0.2)  # v5.1: auxiliary unimodal loss weight
@@ -287,12 +287,13 @@ class CMMATrainer:
         patience_counter = 0
 
         print(f"\n{'='*60}")
-        print(f"  v5.1 CMMA End-to-End Training")
+        print(f"  v5.2 CMMA End-to-End Training (teacher-forced EAG)")
         print(f"  Epochs: {self.epochs}, Batch: {self.batch_size}")
         print(f"  CMMA LR: {self.lr}, Encoder LR: {self.lr * self.encoder_lr_factor}")
         print(f"  EAG LR: {self.lr * self.eag_lr_factor}")
         print(f"  Freeze encoders: first {self.freeze_encoder_epochs} epochs")
         print(f"  Warmup: {self.warmup_epochs} epochs, Patience: {self.patience}")
+        print(f"  Teacher-forced EAG: True")
         print(f"  Aux loss weight: {self.aux_loss_weight}")
         print(f"  Samples/epoch: {self.samples_per_epoch}")
         print(f"{'='*60}\n")
@@ -328,7 +329,7 @@ class CMMATrainer:
                     # End-to-end: raw → encode → CMMA → classify
                     eeg_emb = eeg_encoder(eeg_raw)
                     sp_emb = speech_encoder(sp_raw)
-                    logits, aux = cmma(eeg_emb, sp_emb, return_aux=True)
+                    logits, aux = cmma(eeg_emb, sp_emb, return_aux=True, labels=labels)
 
                     # Main classification loss
                     loss_main = criterion(logits, labels)
