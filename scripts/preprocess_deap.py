@@ -61,6 +61,12 @@ def main() -> None:
             print(f"  SKIP {fname} (not found)")
             continue
 
+        # Skip if already preprocessed
+        feat_out = out_dir / f"s{subj:02d}_features.npy"
+        if feat_out.exists():
+            print(f"  SKIP {fname} (already preprocessed)")
+            continue
+
         print(f"  Processing {fname} ...", end=" ", flush=True)
         features, labels = preprocessor.process_subject(dat_path, mapper)
 
