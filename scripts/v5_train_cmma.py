@@ -187,6 +187,8 @@ class CMMATrainer:
         self.samples_per_epoch = _g("samples_per_epoch", 10000)  # v5.1: more samples
         self.grad_clip = _g("grad_clip", 1.0)
         self.aux_loss_weight = _g("aux_loss_weight", 0.2)  # v5.1: auxiliary unimodal loss weight
+        self.tf_anneal_epochs = _g("tf_anneal_epochs", 25)  # v5.3: anneal TF from 1→0
+        self.gate_div_weight = _g("gate_div_weight", 0.1)  # v5.3: gate diversity loss
 
     def fit(
         self,
@@ -287,13 +289,14 @@ class CMMATrainer:
         patience_counter = 0
 
         print(f"\n{'='*60}")
-        print(f"  v5.2 CMMA End-to-End Training (teacher-forced EAG)")
+        print(f"  v5.3 CMMA End-to-End Training (annealed TF + diversity)")
         print(f"  Epochs: {self.epochs}, Batch: {self.batch_size}")
         print(f"  CMMA LR: {self.lr}, Encoder LR: {self.lr * self.encoder_lr_factor}")
         print(f"  EAG LR: {self.lr * self.eag_lr_factor}")
         print(f"  Freeze encoders: first {self.freeze_encoder_epochs} epochs")
         print(f"  Warmup: {self.warmup_epochs} epochs, Patience: {self.patience}")
-        print(f"  Teacher-forced EAG: True")
+        print(f"  TF anneal: 1.0 → 0.0 over {self.tf_anneal_epochs} epochs")
+        print(f"  Gate diversity weight: {self.gate_div_weight}")
         print(f"  Aux loss weight: {self.aux_loss_weight}")
         print(f"  Samples/epoch: {self.samples_per_epoch}")
         print(f"{'='*60}\n")
@@ -306,6 +309,9 @@ class CMMATrainer:
         t0 = time.time()
 
         for epoch in range(1, self.epochs + 1):
+            # --- Compute annealed teacher forcing ratio ---
+            tf_ratio = max(0.0, 1.0 - (epoch - 1) / self.tf_anneal_epochs)
+
             # --- Unfreeze encoders after warmup phase ---
             if encoders_frozen and epoch > self.freeze_encoder_epochs:
                 for p in encoder_params:
@@ -329,7 +335,10 @@ class CMMATrainer:
                     # End-to-end: raw → encode → CMMA → classify
                     eeg_emb = eeg_encoder(eeg_raw)
                     sp_emb = speech_encoder(sp_raw)
-                    logits, aux = cmma(eeg_emb, sp_emb, return_aux=True, labels=labels)
+                    logits, aux = cmma(
+                        eeg_emb, sp_emb, return_aux=True,
+                        labels=labels, tf_ratio=tf_ratio,
+                    )
 
                     # Main classification loss
                     loss_main = criterion(logits, labels)
@@ -339,11 +348,15 @@ class CMMATrainer:
                     loss_sp_aux = criterion(aux['speech_logits'], labels)
                     loss_probe = criterion(aux['probe_logits'], labels)
 
+                    # Gate diversity loss (prevents gate logits from collapsing)
+                    loss_div = cmma.emotion_gate.gate_diversity_loss()
+
                     # Total loss
                     loss = (loss_main
                             + self.aux_loss_weight * loss_eeg_aux
                             + self.aux_loss_weight * loss_sp_aux
-                            + 0.1 * loss_probe)  # probe is lightweight supervision
+                            + 0.1 * loss_probe
+                            + self.gate_div_weight * loss_div)
 
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
@@ -403,7 +416,7 @@ class CMMATrainer:
                     f"  [{epoch:3d}/{self.epochs}]  "
                     f"train: loss={t_loss:.4f} acc={t_acc:.1%}  "
                     f"val: loss={v_loss:.4f} acc={v_acc:.1%}  "
-                    f"{lr_str}"
+                    f"tf={tf_ratio:.2f}  {lr_str}"
                 )
 
             if v_acc > best_val_acc:

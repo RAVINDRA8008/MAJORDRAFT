@@ -1,4 +1,4 @@
-"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.2.
+"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.3.
 
 Novel architecture contributions
 ─────────────────────────────────
@@ -159,26 +159,19 @@ class CMMABlock(nn.Module):
 class EmotionAwareGating(nn.Module):
     """Learns per-class modality importance weights via sigmoid gating.
 
-    v5.2 fix: Teacher-forced gating + single sigmoid (no double-sigmoid).
+    v5.3: Annealed teacher forcing + gate diversity regularization.
 
-    Each class has ONE learnable gate logit.  During TRAINING, the
-    ground-truth label directly indexes the gate logit (teacher forcing),
-    giving every class its own gradient direction.  During INFERENCE,
-    the emotion probe soft-weights the raw logits.
+    Each class has ONE learnable gate logit.  During training, the model
+    blends teacher-forced gating (using ground-truth labels) with
+    probe-based gating.  The blend ratio (tf_ratio) is annealed from
+    1.0 → 0.0 over training, so:
+      - Early epochs: strong per-class gradient (TF-dominant)
+      - Late epochs:  probe-based (matches inference distribution)
 
-    Only ONE sigmoid is applied (on the raw logit + input adjustment),
-    which avoids the v5.1 double-sigmoid compression that kept weights
-    near 0.50.
+    A gate diversity loss (-std(gate_logits)) prevents logits from
+    collapsing back to equal values.
 
-    Forward (training with labels):
-        1. base_logit = class_gate_logits[label]   (direct index)
-        2. alpha = sigmoid(base_logit + input_adj) (single sigmoid)
-        3. fused = alpha * eeg + (1 - alpha) * speech
-
-    Forward (inference without labels):
-        1. Probe predicts class probs
-        2. base_logit = sum(prob_c * gate_logit_c) (soft-weight raw logits)
-        3. alpha = sigmoid(base_logit + input_adj) (single sigmoid)
+    Only ONE sigmoid is applied (on the blended logit + input adjustment).
     """
 
     def __init__(
@@ -197,8 +190,6 @@ class EmotionAwareGating(nn.Module):
         )
 
         # Per-class gate logits: ONE scalar per class
-        # sigmoid(0) = 0.5 → equal starting point, but sigmoid gradient
-        # at x=0 is 0.25, much healthier than softmax([0.5, 0.5])
         self.class_gate_logits = nn.Parameter(torch.zeros(num_classes))
 
         # Input-dependent gate adjustment (adds to per-class gate)
@@ -216,14 +207,16 @@ class EmotionAwareGating(nn.Module):
         eeg_feat: torch.Tensor,
         speech_feat: torch.Tensor,
         labels: Optional[torch.Tensor] = None,
+        tf_ratio: float = 0.0,
     ) -> torch.Tensor:
         """
         Args:
             eeg_feat: (B, d_model) — enhanced EEG representation
             speech_feat: (B, d_model) — enhanced speech representation
             labels: (B,) int — ground-truth class indices (training only)
-                    If provided, uses teacher-forced gating for strong
-                    per-class gradient.  If None, uses probe soft-selection.
+            tf_ratio: float in [0, 1] — teacher forcing ratio.
+                      1.0 = fully teacher-forced, 0.0 = fully probe-based.
+                      Annealed during training from 1.0 → 0.0.
 
         Returns:
             fused: (B, d_model) — emotion-aware fused representation
@@ -233,26 +226,37 @@ class EmotionAwareGating(nn.Module):
         # Input-dependent adjustment (shared for both modes)
         input_adj = self.input_gate(combined)  # (B, 1)
 
-        if labels is not None:
-            # ── Teacher forcing: directly index the raw gate logit ──
-            # Each class gets its OWN gradient direction
-            base_logit = self.class_gate_logits[labels].unsqueeze(-1)  # (B, 1)
-        else:
-            # ── Inference: soft-weight RAW logits via probe ──
-            emotion_logits = self.emotion_probe(combined)  # (B, C)
-            emotion_probs = F.softmax(emotion_logits, dim=-1)  # (B, C)
-            # Weighted sum of RAW logits (NOT sigmoid — avoids double-sigmoid)
-            base_logit = (emotion_probs * self.class_gate_logits.unsqueeze(0)).sum(
-                dim=-1, keepdim=True
-            )  # (B, 1)
+        # ── Always compute probe-based logit (needed for inference) ──
+        emotion_logits = self.emotion_probe(combined)  # (B, C)
+        emotion_probs = F.softmax(emotion_logits, dim=-1)  # (B, C)
+        probe_logit = (emotion_probs * self.class_gate_logits.unsqueeze(0)).sum(
+            dim=-1, keepdim=True
+        )  # (B, 1)
 
-        # Single sigmoid: raw logit + adjustment → [0, 1]
+        if labels is not None and tf_ratio > 0 and self.training:
+            # ── Blend teacher-forced + probe-based ──
+            tf_logit = self.class_gate_logits[labels].unsqueeze(-1)  # (B, 1)
+            base_logit = tf_ratio * tf_logit + (1 - tf_ratio) * probe_logit
+        else:
+            # ── Inference or tf_ratio=0: fully probe-based ──
+            base_logit = probe_logit
+
+        # Single sigmoid: blended logit + adjustment → [0, 1]
         alpha = torch.sigmoid(base_logit + input_adj)  # (B, 1)
 
         # Emotion-aware fusion
         fused = alpha * eeg_feat + (1 - alpha) * speech_feat  # (B, d_model)
 
         return fused
+
+    def gate_diversity_loss(self) -> torch.Tensor:
+        """Regularizer that encourages per-class gate logits to diverge.
+
+        Returns -std(gate_logits).  Minimizing this loss maximizes the
+        standard deviation of the gate logits, preventing them from
+        collapsing back to uniform 0.50/0.50.
+        """
+        return -torch.std(self.class_gate_logits)
 
     def get_emotion_logits(
         self,
@@ -401,6 +405,7 @@ class CMMAFusionClassifier(nn.Module):
         speech_embedding: torch.Tensor,
         return_aux: bool = False,
         labels: Optional[torch.Tensor] = None,
+        tf_ratio: float = 0.0,
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         """
         Args:
@@ -408,6 +413,7 @@ class CMMAFusionClassifier(nn.Module):
             speech_embedding: (B, speech_embed_dim) — from Speech encoder
             return_aux: if True, also return auxiliary logits dict
             labels: (B,) int — ground-truth labels for teacher-forced gating
+            tf_ratio: float in [0, 1] — teacher forcing blend ratio
 
         Returns:
             logits: (B, num_classes)
@@ -444,7 +450,9 @@ class CMMAFusionClassifier(nn.Module):
         sp_cls = self.sp_out_norm(sp_tokens[:, 0, :])      # (B, d_model)
 
         # --- Emotion-Aware Gating ---
-        fused = self.emotion_gate(eeg_cls, sp_cls, labels=labels)  # (B, d_model)
+        fused = self.emotion_gate(
+            eeg_cls, sp_cls, labels=labels, tf_ratio=tf_ratio,
+        )  # (B, d_model)
 
         # --- Classify ---
         logits = self.classifier(fused)  # (B, num_classes)
