@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""v5 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
+"""v5.4 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
 
-What's new in v5
-────────────────
-1. End-to-end training: encoders are fine-tuned jointly with CMMA layers
-2. Discriminative learning rates: encoders get 10x lower LR to preserve
-   pretrained representations
-3. Cross-modal mutual attention replaces independent encoder → frozen fusion
-4. Emotion-aware gating learns per-class modality importance
-5. Warmup + cosine decay schedule for stable convergence
+What's new in v5.4
+──────────────────
+1. End-to-end training: encoders fine-tuned jointly with CMMA layers
+2. Discriminative LR: encoders get 0.05x LR to preserve representations
+3. Cross-modal mutual attention with gated cross-attention
+4. Emotion-aware gating: per-class modality weights via annealed TF
+5. Embedding Mixup: interpolate embeddings for regularization (v5.4)
+6. Model EMA: exponential moving average of weights (v5.4)
+7. Gate diversity loss: prevents modality weight collapse
 
 Usage:
     python scripts/v5_train_cmma.py
@@ -148,6 +149,37 @@ class WarmupCosineScheduler:
 
 
 # ======================================================================
+# Exponential Moving Average (v5.4)
+# ======================================================================
+
+class ModelEMA:
+    """Exponential Moving Average of model parameters.
+
+    Maintains shadow copies updated as:
+        shadow = decay * shadow + (1 - decay) * current
+    with warmup: actual_decay = min(decay, (1+steps)/(10+steps)).
+    """
+
+    def __init__(self, model: nn.Module, decay: float = 0.998):
+        self.decay = decay
+        self.shadow = {k: v.clone().detach() for k, v in model.state_dict().items()}
+        self.num_updates = 0
+
+    @torch.no_grad()
+    def update(self, model: nn.Module):
+        self.num_updates += 1
+        d = min(self.decay, (1 + self.num_updates) / (10 + self.num_updates))
+        for k, v in model.state_dict().items():
+            if v.is_floating_point():
+                self.shadow[k].mul_(d).add_(v, alpha=1 - d)
+            else:
+                self.shadow[k].copy_(v)
+
+    def state_dict(self):
+        return {k: v.clone() for k, v in self.shadow.items()}
+
+
+# ======================================================================
 # V5 Trainer
 # ======================================================================
 
@@ -189,6 +221,8 @@ class CMMATrainer:
         self.aux_loss_weight = _g("aux_loss_weight", 0.2)  # v5.1: auxiliary unimodal loss weight
         self.tf_anneal_epochs = _g("tf_anneal_epochs", 25)  # v5.3: anneal TF from 1→0
         self.gate_div_weight = _g("gate_div_weight", 0.1)  # v5.3: gate diversity loss
+        self.mixup_alpha = _g("mixup_alpha", 0.4)  # v5.4: embedding mixup
+        self.ema_decay = _g("ema_decay", 0.998)  # v5.4: EMA weight averaging
 
     def fit(
         self,
@@ -289,13 +323,14 @@ class CMMATrainer:
         patience_counter = 0
 
         print(f"\n{'='*60}")
-        print(f"  v5.3 CMMA End-to-End Training (annealed TF + diversity)")
+        print(f"  v5.4 CMMA End-to-End Training (mixup + EMA)")
         print(f"  Epochs: {self.epochs}, Batch: {self.batch_size}")
         print(f"  CMMA LR: {self.lr}, Encoder LR: {self.lr * self.encoder_lr_factor}")
         print(f"  EAG LR: {self.lr * self.eag_lr_factor}")
         print(f"  Freeze encoders: first {self.freeze_encoder_epochs} epochs")
         print(f"  Warmup: {self.warmup_epochs} epochs, Patience: {self.patience}")
         print(f"  TF anneal: 1.0 → 0.0 over {self.tf_anneal_epochs} epochs")
+        print(f"  Mixup alpha: {self.mixup_alpha}, EMA decay: {self.ema_decay}")
         print(f"  Gate diversity weight: {self.gate_div_weight}")
         print(f"  Aux loss weight: {self.aux_loss_weight}")
         print(f"  Samples/epoch: {self.samples_per_epoch}")
@@ -307,6 +342,12 @@ class CMMATrainer:
         encoders_frozen = True
 
         t0 = time.time()
+
+        # v5.4: Initialize EMA shadow models
+        if self.ema_decay > 0:
+            ema_eeg = ModelEMA(eeg_encoder, decay=self.ema_decay)
+            ema_sp = ModelEMA(speech_encoder, decay=self.ema_decay)
+            ema_cmma = ModelEMA(cmma, decay=self.ema_decay)
 
         for epoch in range(1, self.epochs + 1):
             # --- Compute annealed teacher forcing ratio ---
@@ -335,18 +376,38 @@ class CMMATrainer:
                     # End-to-end: raw → encode → CMMA → classify
                     eeg_emb = eeg_encoder(eeg_raw)
                     sp_emb = speech_encoder(sp_raw)
-                    logits, aux = cmma(
-                        eeg_emb, sp_emb, return_aux=True,
-                        labels=labels, tf_ratio=tf_ratio,
-                    )
 
-                    # Main classification loss
-                    loss_main = criterion(logits, labels)
+                    # --- v5.4: Embedding Mixup (50% of batches) ---
+                    do_mixup = (self.mixup_alpha > 0
+                                and torch.rand(1).item() < 0.5)
 
-                    # Auxiliary unimodal losses (force each modality to be discriminative)
-                    loss_eeg_aux = criterion(aux['eeg_logits'], labels)
-                    loss_sp_aux = criterion(aux['speech_logits'], labels)
-                    loss_probe = criterion(aux['probe_logits'], labels)
+                    if do_mixup:
+                        lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
+                        lam = max(lam, 1 - lam)  # dominant stays dominant
+                        perm = torch.randperm(eeg_emb.size(0), device=self.device)
+                        eeg_emb = lam * eeg_emb + (1 - lam) * eeg_emb[perm]
+                        sp_emb = lam * sp_emb + (1 - lam) * sp_emb[perm]
+                        labels_b = labels[perm]
+
+                        # No TF with mixup (labels are mixed)
+                        logits, aux = cmma(eeg_emb, sp_emb, return_aux=True)
+                        loss_main = (lam * criterion(logits, labels)
+                                     + (1 - lam) * criterion(logits, labels_b))
+                        loss_eeg_aux = (lam * criterion(aux['eeg_logits'], labels)
+                                        + (1 - lam) * criterion(aux['eeg_logits'], labels_b))
+                        loss_sp_aux = (lam * criterion(aux['speech_logits'], labels)
+                                       + (1 - lam) * criterion(aux['speech_logits'], labels_b))
+                        loss_probe = (lam * criterion(aux['probe_logits'], labels)
+                                      + (1 - lam) * criterion(aux['probe_logits'], labels_b))
+                    else:
+                        logits, aux = cmma(
+                            eeg_emb, sp_emb, return_aux=True,
+                            labels=labels, tf_ratio=tf_ratio,
+                        )
+                        loss_main = criterion(logits, labels)
+                        loss_eeg_aux = criterion(aux['eeg_logits'], labels)
+                        loss_sp_aux = criterion(aux['speech_logits'], labels)
+                        loss_probe = criterion(aux['probe_logits'], labels)
 
                     # Gate diversity loss (prevents gate logits from collapsing)
                     loss_div = cmma.emotion_gate.gate_diversity_loss()
@@ -371,11 +432,25 @@ class CMMATrainer:
                 scaler.update()
                 scheduler.step()
 
+                # v5.4: Update EMA
+                if self.ema_decay > 0:
+                    ema_eeg.update(eeg_encoder)
+                    ema_sp.update(speech_encoder)
+                    ema_cmma.update(cmma)
+
                 train_loss += loss.item() * eeg_raw.size(0)
                 train_correct += (logits.argmax(1) == labels).sum().item()
                 train_total += eeg_raw.size(0)
 
-            # --- Validate ---
+            # --- Validate (with EMA weights if enabled) ---
+            if self.ema_decay > 0:
+                _bk_eeg = {k: v.clone() for k, v in eeg_encoder.state_dict().items()}
+                _bk_sp = {k: v.clone() for k, v in speech_encoder.state_dict().items()}
+                _bk_cmma = {k: v.clone() for k, v in cmma.state_dict().items()}
+                eeg_encoder.load_state_dict(ema_eeg.state_dict())
+                speech_encoder.load_state_dict(ema_sp.state_dict())
+                cmma.load_state_dict(ema_cmma.state_dict())
+
             eeg_encoder.eval()
             speech_encoder.eval()
             cmma.eval()
@@ -443,6 +518,12 @@ class CMMATrainer:
                 if patience_counter >= self.patience:
                     print(f"\n  Early stopping at epoch {epoch}")
                     break
+
+            # Restore training weights after EMA-based validation
+            if self.ema_decay > 0:
+                eeg_encoder.load_state_dict(_bk_eeg)
+                speech_encoder.load_state_dict(_bk_sp)
+                cmma.load_state_dict(_bk_cmma)
 
         elapsed = time.time() - t0
         print(f"\n{'='*60}")

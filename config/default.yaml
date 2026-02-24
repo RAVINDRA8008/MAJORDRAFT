@@ -168,7 +168,7 @@ v3:
     warmup_epochs: 5       # warm-up fusion before RL starts
 
 # ============================================================
-# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.3
+# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.4
 # ============================================================
 v5:
   # --- CMMA architecture ---
@@ -189,12 +189,14 @@ v5:
   weight_decay: 0.0003     # v5.2: stronger regularization (was 0.0001)
   warmup_epochs: 5         # linear LR warmup before cosine decay
   freeze_encoder_epochs: 8  # v5.1: freeze encoders for first N epochs
-  patience: 20             # early stopping patience
-  samples_per_epoch: 10000 # v5.1: more samples per epoch (was 8000)
+  patience: 25             # v5.4: increased patience (was 20)
+  samples_per_epoch: 12000 # v5.4: more samples per epoch (was 10000)
   grad_clip: 1.0           # gradient clipping max norm
   aux_loss_weight: 0.2     # v5.1: weight for auxiliary unimodal losses
   tf_anneal_epochs: 25     # v5.3: anneal teacher forcing 1.0→0.0 over N epochs
   gate_div_weight: 0.1     # v5.3: gate diversity regularizer weight
+  mixup_alpha: 0.4         # v5.4: Beta distribution param for embedding mixup
+  ema_decay: 0.998         # v5.4: EMA decay rate for model weight averaging
 
 # ------ Logging ------
 logging:
