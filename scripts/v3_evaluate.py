@@ -145,9 +145,10 @@ def main() -> None:
         modality_dropout_prob=0.0,
     ).to(device)
 
-    # Try: RL v3 best → transformer fusion → v2 RL best
+    # Try: transformer fusion → RL v3 best → v2 RL best
+    # Prefer transformer fusion over RL because RL often degrades performance
     fusion_source = "random"
-    for name in ["v3/best_fusion_v3.pt", "v3/best_transformer_fusion.pt", "rl/best_fusion.pt"]:
+    for name in ["v3/best_transformer_fusion.pt", "v3/best_fusion_v3.pt", "rl/best_fusion.pt"]:
         if (ckpt / name).exists():
             sd = torch.load(ckpt / name, map_location=device)
             fusion.load_state_dict(sd.get("fusion", sd))

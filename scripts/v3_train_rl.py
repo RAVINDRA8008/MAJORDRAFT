@@ -102,8 +102,8 @@ def main() -> None:
         n_heads=n_heads,
         n_layers=n_layers,
         num_classes=cfg.model.num_classes,
-        dropout=0.1,
-        modality_dropout_prob=0.1,
+        dropout=0.15,
+        modality_dropout_prob=0.15,
     )
 
     tf_ckpt = ckpt / "v3" / "best_transformer_fusion.pt"
@@ -125,6 +125,16 @@ def main() -> None:
         sp_feat, sp_lbl, test_size=0.2, stratify=sp_lbl, random_state=cfg.seed,
     )
 
+    # Convert to tensors
+    eeg_Xt_t = torch.as_tensor(eeg_Xt, dtype=torch.float32)
+    eeg_yt_t = torch.as_tensor(eeg_yt, dtype=torch.long)
+    sp_Xt_t = torch.as_tensor(sp_Xt, dtype=torch.float32)
+    sp_yt_t = torch.as_tensor(sp_yt, dtype=torch.long)
+    eeg_Xv_t = torch.as_tensor(eeg_Xv, dtype=torch.float32)
+    eeg_yv_t = torch.as_tensor(eeg_yv, dtype=torch.long)
+    sp_Xv_t = torch.as_tensor(sp_Xv, dtype=torch.float32)
+    sp_yv_t = torch.as_tensor(sp_yv, dtype=torch.long)
+
     # ── Train RL v2 ──
     rl_save = ckpt / "v3"
     rl_save.mkdir(parents=True, exist_ok=True)
@@ -133,17 +143,71 @@ def main() -> None:
         cfg, gan=gan,
         eeg_encoder=eeg_enc, speech_encoder=speech_enc, fusion=fusion,
     )
+    # ── Save pre-RL baseline so we can revert if RL degrades ──
+    pre_rl_state = {k: v.clone() for k, v in fusion.state_dict().items()}
+
+    # ── Evaluate pre-RL baseline accuracy ──
+    from src.training.fusion_trainer import LabelAlignedDataset
+    import torch.nn.functional as F
+
+    fusion.to(trainer.device).eval()
+    eeg_enc_dev = eeg_enc.to(trainer.device)
+    speech_enc_dev = speech_enc.to(trainer.device)
+    eeg_enc_dev.eval()
+    speech_enc_dev.eval()
+
+    with torch.no_grad():
+        # Encode validation data
+        eeg_emb_parts = []
+        for i in range(0, len(eeg_Xv_t), 512):
+            eeg_emb_parts.append(eeg_enc_dev(eeg_Xv_t[i:i+512].to(trainer.device)).cpu())
+        eeg_emb_val = torch.cat(eeg_emb_parts)
+        sp_emb_parts = []
+        for i in range(0, len(sp_Xv_t), 512):
+            sp_emb_parts.append(speech_enc_dev(sp_Xv_t[i:i+512].to(trainer.device)).cpu())
+        sp_emb_val = torch.cat(sp_emb_parts)
+
+        baseline_ds = LabelAlignedDataset(
+            eeg_emb_val, eeg_yv_t, sp_emb_val, sp_yv_t,
+            num_classes=cfg.model.num_classes, balance_classes=False,
+        )
+        from torch.utils.data import DataLoader
+        baseline_loader = DataLoader(baseline_ds, batch_size=512)
+        correct, total = 0, 0
+        for eb, sb, lb in baseline_loader:
+            logits = fusion(eb.to(trainer.device), sb.to(trainer.device))
+            correct += (logits.argmax(1).cpu() == lb).sum().item()
+            total += len(lb)
+        pre_rl_acc = correct / max(total, 1)
+    print(f"Pre-RL baseline accuracy: {pre_rl_acc:.4f}")
+
+    # ── Train RL v2 ──
     history = trainer.train(
-        torch.as_tensor(eeg_Xt, dtype=torch.float32),
-        torch.as_tensor(eeg_yt, dtype=torch.long),
-        torch.as_tensor(sp_Xt, dtype=torch.float32),
-        torch.as_tensor(sp_yt, dtype=torch.long),
-        torch.as_tensor(eeg_Xv, dtype=torch.float32),
-        torch.as_tensor(eeg_yv, dtype=torch.long),
-        torch.as_tensor(sp_Xv, dtype=torch.float32),
-        torch.as_tensor(sp_yv, dtype=torch.long),
+        eeg_Xt_t, eeg_yt_t,
+        sp_Xt_t, sp_yt_t,
+        eeg_Xv_t, eeg_yv_t,
+        sp_Xv_t, sp_yv_t,
         save_dir=rl_save,
     )
+
+    # ── Safety guard: revert if RL degraded performance ──
+    best_rl_acc = max(history["val_acc"]) if history["val_acc"] else 0
+    best_rl_f1 = max(history["macro_f1"]) if history["macro_f1"] else 0
+    print(f"RL best val_acc: {best_rl_acc:.4f}, best macro_f1: {best_rl_f1:.4f}")
+    print(f"Pre-RL baseline: {pre_rl_acc:.4f}")
+
+    if best_rl_acc < pre_rl_acc - 0.005:
+        print("WARNING: RL DEGRADED performance! Reverting to pre-RL checkpoint.")
+        fusion.load_state_dict(pre_rl_state)
+        # Overwrite the RL checkpoint with the pre-RL baseline
+        from src.utils.checkpoint import save_checkpoint
+        save_checkpoint(
+            {"fusion": pre_rl_state, "reverted": True, "pre_rl_acc": pre_rl_acc},
+            rl_save / "best_fusion_v3.pt",
+        )
+        print("Saved pre-RL checkpoint as best_fusion_v3.pt (RL reverted)")
+    else:
+        print("RL maintained or improved performance. Keeping RL checkpoint.")
 
     # Plot
     out = Path(paths["outputs"])
@@ -151,7 +215,7 @@ def main() -> None:
         history["aug_ratio"],
         save_path=str(out / "v3_rl_aug_ratios.png"),
     )
-    print("RL v2 training complete. Best macro F1:", max(history["macro_f1"]))
+    print(f"RL v2 training complete. Best macro F1: {best_rl_f1:.4f}")
 
 
 if __name__ == "__main__":

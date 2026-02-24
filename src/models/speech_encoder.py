@@ -1,7 +1,17 @@
-"""CNN-LSTM Speech Encoder for IEMOCAP MFCC sequences.
+"""CNN-BiLSTM-Attention Speech Encoder for IEMOCAP MFCC sequences (v4).
 
 Architecture:
-    MFCC input (B, T, 120) → Conv2D layers → BiLSTM → mean pooling → FC → embedding (128)
+    MFCC input (B, T, 120)
+    → Conv2D layers with residual connections
+    → BiLSTM
+    → Multi-head self-attention with learnable query
+    → FC → embedding (128)
+
+v4 upgrades:
+- Added multi-head self-attention after BiLSTM for temporal focus
+- Added attention-weighted pooling (replaces mean pooling)
+- Deeper FC projection with residual skip
+- Stronger regularisation (spatial dropout, layer norm)
 """
 
 from __future__ import annotations
@@ -11,7 +21,7 @@ import torch.nn as nn
 
 
 class SpeechEncoder(nn.Module):
-    """CNN-LSTM encoder: MFCC sequences → emotion embedding."""
+    """CNN-BiLSTM-Attention encoder: MFCC sequences → emotion embedding."""
 
     def __init__(
         self,
@@ -22,7 +32,8 @@ class SpeechEncoder(nn.Module):
         lstm_bidirectional: bool = True,
         lstm_dropout: float = 0.3,
         embedding_dim: int = 128,
-        pooling: str = "mean",
+        pooling: str = "attention",
+        n_attn_heads: int = 4,
     ) -> None:
         super().__init__()
         if cnn_channels is None:
@@ -45,8 +56,6 @@ class SpeechEncoder(nn.Module):
         self.cnn = nn.Sequential(*cnn_layers)
 
         # Compute the feature dimension after CNN
-        # After 3 MaxPool2d(2,2): frequency dim → n_features / 8
-        # Each pool halves both time and frequency dims
         self._freq_after_cnn = n_features // (2 ** len(cnn_channels))
         self._lstm_input_dim = cnn_channels[-1] * self._freq_after_cnn
 
@@ -62,12 +71,26 @@ class SpeechEncoder(nn.Module):
 
         lstm_output_dim = lstm_hidden_size * (2 if lstm_bidirectional else 1)
 
-        # ----- FC projection -----
+        # ----- Self-attention pooling -----
+        if pooling == "attention":
+            self.attn_norm = nn.LayerNorm(lstm_output_dim)
+            self.attn = nn.MultiheadAttention(
+                embed_dim=lstm_output_dim,
+                num_heads=n_attn_heads,
+                dropout=0.1,
+                batch_first=True,
+            )
+            self.attn_query = nn.Parameter(torch.randn(1, 1, lstm_output_dim) * 0.02)
+
+        # ----- FC projection with skip -----
         self.fc = nn.Sequential(
             nn.Linear(lstm_output_dim, embedding_dim),
-            nn.ReLU(inplace=True),
+            nn.LayerNorm(embedding_dim),
+            nn.GELU(),
+            nn.Dropout(0.2),
             nn.Linear(embedding_dim, embedding_dim),
         )
+        self.skip = nn.Linear(lstm_output_dim, embedding_dim) if lstm_output_dim != embedding_dim else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -92,12 +115,16 @@ class SpeechEncoder(nn.Module):
         lstm_out, _ = self.lstm(x)  # (B, T', 2*H)
 
         # Temporal pooling
-        if self.pooling == "mean":
-            x = lstm_out.mean(dim=1)  # (B, 2*H)
+        if self.pooling == "attention" and hasattr(self, "attn"):
+            # Attention-based pooling with learnable query
+            h = self.attn_norm(lstm_out)
+            query = self.attn_query.expand(B, -1, -1)
+            pooled, _ = self.attn(query, h, h)  # (B, 1, 2*H)
+            x = pooled.squeeze(1)  # (B, 2*H)
         elif self.pooling == "last":
             x = lstm_out[:, -1, :]
         else:
-            x = lstm_out.mean(dim=1)
+            x = lstm_out.mean(dim=1)  # (B, 2*H)
 
-        # FC projection
-        return self.fc(x)  # (B, embedding_dim)
+        # FC projection with skip connection
+        return self.fc(x) + self.skip(x)  # (B, embedding_dim)

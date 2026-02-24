@@ -58,10 +58,15 @@ model:
     hidden_dims: [256, 128]
     embedding_dim: 128
     dropout: 0.3
-    pretrain_epochs: 30
+    pretrain_epochs: 50      # increased for deeper v4 arch
     batch_size: 128
     lr: 0.001
-    patience: 10             # early stopping patience
+    patience: 15             # increased patience
+    max_samples_per_class: 5000   # cap majority classes
+    min_samples_per_class: 2000   # oversample minority classes
+    mixup: true                   # mixup augmentation
+    mixup_alpha: 0.4              # mixup alpha
+    n_attn_layers: 3              # transformer attention layers
 
   speech_encoder:
     n_mfcc: 120              # 40 × 3 (static + Δ + ΔΔ)
@@ -82,14 +87,16 @@ model:
     lr_d: 0.0002             # TTUR: D gets higher LR
     epochs: 100
     batch_size: 256
+    gp_lambda: 10.0          # WGAN-GP gradient penalty coefficient
+    n_critic: 5              # critic updates per generator update
 
   fusion:
     eeg_dim: 128
     speech_dim: 128
     hidden_dims: [128, 64]
     num_classes: 4
-    dropout: 0.3
-    modality_dropout: 0.2
+    dropout: 0.15             # reduced dropout (LayerNorm handles regularization)
+    modality_dropout: 0.15     # modality dropout for robustness
     epochs: 50
     batch_size: 128
     lr: 0.001

@@ -1,17 +1,12 @@
-"""Conditional GAN trainer with autonomous stability management.
+"""WGAN-GP trainer with autonomous stability management (v4).
 
-Trains Generator + Discriminator on EEG feature vectors.  Monitors
-training dynamics in real-time and automatically corrects:
+Trains Generator + Critic on EEG feature vectors using Wasserstein
+loss with gradient penalty.
 
-* Discriminator dominance  (D_loss < 0.45 and G climbing)
-* Generator dominance      (D_loss > 0.65)
-* Mode collapse            (G_loss ≈ 0 or output variance collapse)
-* Stalled training         (losses static for many epochs)
-
-Also handles:
+Features:
 * TTUR (Two Time-scale Update Rule) — separate LRs for G/D
 * Adaptive batch sizing to maximise GPU utilisation
-* Best-equilibrium checkpoint selection
+* Best-checkpoint selection based on Wasserstein distance
 * Gradient clipping
 * Comprehensive training report generation
 """
@@ -37,17 +32,18 @@ from src.utils.device import get_device, log_gpu_memory
 
 logger = logging.getLogger(__name__)
 
-# ── Target equilibrium ranges ─────────────────────────────────────────
-IDEAL_D_LOSS_LOW = 0.45
-IDEAL_D_LOSS_HIGH = 0.65
-IDEAL_G_LOSS_LOW = 0.8
-IDEAL_G_LOSS_HIGH = 1.5
+# ── WGAN-GP does not use BCE thresholds ───────────────────────────────
+# These are kept for report formatting only
+IDEAL_D_LOSS_LOW = -10.0   # WGAN D loss can be negative
+IDEAL_D_LOSS_HIGH = 10.0
+IDEAL_G_LOSS_LOW = -10.0
+IDEAL_G_LOSS_HIGH = 10.0
 
-# ── Instability thresholds ────────────────────────────────────────────
-D_DOMINANCE_THRESHOLD = 0.40
-G_DOMINANCE_THRESHOLD = 0.70
-MODE_COLLAPSE_G_LOSS = 0.05
-IMBALANCE_PATIENCE = 10  # epochs before auto-correction
+# ── Instability thresholds (adapted for WGAN-GP) ─────────────────────
+D_DOMINANCE_THRESHOLD = -100.0  # effectively disabled for WGAN-GP
+G_DOMINANCE_THRESHOLD = 100.0   # effectively disabled for WGAN-GP
+MODE_COLLAPSE_G_LOSS = -50.0    # effectively disabled
+IMBALANCE_PATIENCE = 10
 
 # ── Gradient clipping ─────────────────────────────────────────────────
 GRAD_CLIP_MAX_NORM = 1.0
@@ -93,8 +89,10 @@ class GANTrainer:
             "num_classes": cfg.model.num_classes,
             "generator_hidden_dims": [gcfg.hidden_dim, gcfg.hidden_dim * 2, gcfg.hidden_dim],
             "discriminator_hidden_dims": [gcfg.hidden_dim, gcfg.hidden_dim * 2, gcfg.hidden_dim],
-            "lr": self.lr_g_base,          # G gets lower LR (TTUR)
-            "label_smooth": 0.9,
+            "lr": self.lr_g_base,
+            "label_smooth": 1.0,        # not used in WGAN-GP
+            "gp_lambda": float(getattr(gcfg, "gp_lambda", 10.0)),
+            "n_critic": int(getattr(gcfg, "n_critic", 5)),
         }
         self.gan = ConditionalGAN(gan_config, self.device)
 
@@ -232,10 +230,8 @@ class GANTrainer:
     # ------------------------------------------------------------------
     @staticmethod
     def _equilibrium_score(g_loss: float, d_loss: float) -> float:
-        """Lower = better.  Measures deviation from ideal equilibrium."""
-        d_dev = abs(d_loss - 0.5)                      # D should be ~0.5
-        g_dev = abs(g_loss - 1.1) if g_loss > 0 else 5.0  # G should be ~1.0–1.2
-        return d_dev + g_dev
+        """Lower = better. For WGAN-GP, smaller |g_loss| + |d_loss| = more stable."""
+        return abs(g_loss) + abs(d_loss)
 
     # ------------------------------------------------------------------
     # Main training loop

@@ -96,7 +96,7 @@ class CrossAttentionLayer(nn.Module):
         d_model: int = 64,
         n_heads: int = 4,
         ff_dim: int = 256,
-        dropout: float = 0.1,
+        dropout: float = 0.15,
     ) -> None:
         super().__init__()
         # Cross-attention: Q from A, KV from B
@@ -173,8 +173,8 @@ class CrossModalTransformerFusion(nn.Module):
         n_heads: int = 4,
         n_layers: int = 2,
         ff_dim: int = 256,
-        dropout: float = 0.1,
-        modality_dropout_prob: float = 0.1,
+        dropout: float = 0.15,
+        modality_dropout_prob: float = 0.15,
     ) -> None:
         super().__init__()
         self.modality_dropout_prob = modality_dropout_prob
@@ -256,8 +256,8 @@ class TransformerFusionClassifier(nn.Module):
         n_layers: int = 2,
         ff_dim: int = 256,
         num_classes: int = 4,
-        dropout: float = 0.1,
-        modality_dropout_prob: float = 0.1,
+        dropout: float = 0.15,
+        modality_dropout_prob: float = 0.15,
     ) -> None:
         super().__init__()
         self.fusion = CrossModalTransformerFusion(
@@ -276,13 +276,13 @@ class TransformerFusionClassifier(nn.Module):
 
         self.classifier = nn.Sequential(
             nn.Linear(fused_dim, fused_dim),
-            nn.BatchNorm1d(fused_dim),
+            nn.LayerNorm(fused_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(fused_dim, fused_dim // 2),
-            nn.BatchNorm1d(fused_dim // 2),
+            nn.LayerNorm(fused_dim // 2),
             nn.GELU(),
-            nn.Dropout(dropout * 0.5),
+            nn.Dropout(dropout),
             nn.Linear(fused_dim // 2, num_classes),
         )
 

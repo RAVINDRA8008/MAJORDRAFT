@@ -98,16 +98,17 @@ class LabelAlignedDataset(Dataset):
             self.eeg_by_class[c] = eeg_emb[eeg_mask]
             self.speech_by_class[c] = speech_emb[sp_mask]
 
-        # Determine samples per class
+        # Determine samples per class — v4: use MAX of both modalities
+        # with oversampling (replacement) to create more diverse pairs
         if balance_classes:
-            # Use the max of the smaller modality per class → balanced + large
+            # Target: largest modality count across all classes, capped at 5000
             sizes = []
             for c in range(num_classes):
                 ne = len(self.eeg_by_class[c])
                 ns = len(self.speech_by_class[c])
                 if ne > 0 and ns > 0:
-                    sizes.append(min(ne, ns))
-            target = max(sizes) if sizes else 100
+                    sizes.append(max(ne, ns))
+            target = min(max(sizes) if sizes else 100, 5000)
             self.samples_per_class = {c: target for c in range(num_classes)}
         else:
             self.samples_per_class = {}

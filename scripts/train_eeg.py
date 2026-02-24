@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Pre-train the EEG encoder on DEAP differential-entropy features.
 
-Optimised training with:
-- Focal loss (gamma=2) for extreme DEAP imbalance (47:1)
+v4 optimisations:
+- **Aggressive class rebalancing**: caps each class to max_samples_per_class
+  (default 5000) BEFORE train/val split to eliminate 37x imbalance
+- Focal loss (gamma=2) for remaining mild imbalance
 - Balanced batch sampling (WeightedRandomSampler)
+- Mixup augmentation for regularisation
 - Mixed-precision training (AMP)
 - Cosine LR scheduling with warmup
 - Early stopping + best-checkpoint selection
@@ -18,6 +21,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -37,6 +41,66 @@ from src.models.eeg_encoder import EEGEncoder
 from src.utils.visualization import plot_loss_curves, plot_accuracy_curves
 
 LABEL_NAMES = {0: "angry", 1: "happy", 2: "sad", 3: "neutral"}
+
+
+def balance_classes(
+    features: np.ndarray,
+    labels: np.ndarray,
+    max_per_class: int = 5000,
+    min_oversample: int = 2000,
+    seed: int = 42,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Aggressively rebalance classes via under+oversampling.
+
+    1. Cap each class at *max_per_class* (undersample majority).
+    2. Oversample minority classes to at least *min_oversample* via
+       repetition + noise jitter.
+
+    This reduces 37x imbalance to at most 2.5x.
+    """
+    rng = np.random.RandomState(seed)
+    balanced_feats, balanced_labels = [], []
+
+    for cls in sorted(set(labels.tolist())):
+        mask = labels == cls
+        cls_feats = features[mask]
+        n = len(cls_feats)
+
+        if n > max_per_class:
+            # Undersample: random selection without replacement
+            idx = rng.choice(n, max_per_class, replace=False)
+            cls_feats = cls_feats[idx]
+        elif n < min_oversample:
+            # Oversample with noise jitter to avoid exact duplicates
+            deficit = min_oversample - n
+            extra_idx = rng.choice(n, deficit, replace=True)
+            extra = cls_feats[extra_idx] + rng.normal(0, 0.01, cls_feats[extra_idx].shape).astype(cls_feats.dtype)
+            cls_feats = np.concatenate([cls_feats, extra], axis=0)
+
+        balanced_feats.append(cls_feats)
+        balanced_labels.append(np.full(len(cls_feats), cls, dtype=labels.dtype))
+
+    features_out = np.concatenate(balanced_feats, axis=0)
+    labels_out = np.concatenate(balanced_labels, axis=0)
+
+    # Shuffle
+    perm = rng.permutation(len(features_out))
+    return features_out[perm], labels_out[perm]
+
+
+def mixup_batch(
+    x: torch.Tensor, y: torch.Tensor, alpha: float = 0.4
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+    """Mixup augmentation: returns mixed inputs and pairs of targets.
+
+    Returns:
+        (mixed_x, y_a, y_b, lam)
+    """
+    lam = np.random.beta(alpha, alpha) if alpha > 0 else 1.0
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size, device=x.device)
+    mixed_x = lam * x + (1 - lam) * x[index]
+    return mixed_x, y, y[index], lam
 
 
 class FocalLoss(nn.Module):
@@ -91,6 +155,26 @@ def main() -> None:
     loader = DEAPLoader(processed_dir=paths["deap_processed"])
     features, labels, _ = loader.load_all(flatten=True)
 
+    # ── Aggressive class rebalancing BEFORE train/val split ──
+    ecfg = cfg.model.eeg_encoder
+    max_per_cls = getattr(ecfg, "max_samples_per_class", 5000)
+    min_per_cls = getattr(ecfg, "min_samples_per_class", 2000)
+    print(f"Original data: {len(labels)} samples")
+    dist_orig = Counter(labels.tolist())
+    imbalance_orig = max(dist_orig.values()) / max(min(dist_orig.values()), 1)
+    print(f"  Original distribution: {dict(sorted(dist_orig.items()))} ({imbalance_orig:.0f}x imbalance)")
+
+    features, labels = balance_classes(
+        features, labels,
+        max_per_class=max_per_cls,
+        min_oversample=min_per_cls,
+        seed=cfg.seed,
+    )
+    print(f"After rebalancing: {len(labels)} samples")
+    dist_bal = Counter(labels.tolist())
+    imbalance_bal = max(dist_bal.values()) / max(min(dist_bal.values()), 1)
+    print(f"  Balanced distribution: {dict(sorted(dist_bal.items()))} ({imbalance_bal:.1f}x imbalance)")
+
     X_train, X_val, y_train, y_val = train_test_split(
         features, labels, test_size=0.2, stratify=labels, random_state=cfg.seed,
     )
@@ -99,11 +183,11 @@ def main() -> None:
     X_val = torch.as_tensor(X_val, dtype=torch.float32)
     y_val = torch.as_tensor(y_val, dtype=torch.long)
 
-    # ── Class balance analysis ──
+    # ── Class balance analysis (post-split) ──
     dist = Counter(y_train.numpy().tolist())
     imbalance = max(dist.values()) / max(min(dist.values()), 1)
     dist_str = ", ".join(f"{LABEL_NAMES.get(k, k)}: {v}" for k, v in sorted(dist.items()))
-    print(f"Label distribution: {dist_str}  (imbalance {imbalance:.0f}x)")
+    print(f"Train distribution: {dist_str}  (imbalance {imbalance:.1f}x)")
 
     use_balanced = imbalance > 2.0
     class_weights = compute_class_weights(y_train).to(device)
@@ -111,8 +195,10 @@ def main() -> None:
     ecfg = cfg.model.eeg_encoder
     batch_size = getattr(ecfg, "batch_size", 64)
     lr = getattr(ecfg, "lr", 1e-3)
-    epochs = getattr(ecfg, "pretrain_epochs", 30)
-    patience = getattr(ecfg, "patience", 10)
+    epochs = getattr(ecfg, "pretrain_epochs", 50)
+    patience = getattr(ecfg, "patience", 15)
+    use_mixup = getattr(ecfg, "mixup", True)
+    mixup_alpha = getattr(ecfg, "mixup_alpha", 0.4)
 
     # ── DataLoaders ──
     train_ds = TensorDataset(X_train, y_train)
@@ -181,9 +267,15 @@ def main() -> None:
             xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
 
             with autocast(enabled=use_amp):
-                emb = encoder(xb)
-                logits = head(emb)
-                loss = criterion(logits, yb)
+                if use_mixup and np.random.rand() < 0.5:
+                    xb_mix, ya, yb_mix, lam = mixup_batch(xb, yb, mixup_alpha)
+                    emb = encoder(xb_mix)
+                    logits = head(emb)
+                    loss = lam * criterion(logits, ya) + (1 - lam) * criterion(logits, yb_mix)
+                else:
+                    emb = encoder(xb)
+                    logits = head(emb)
+                    loss = criterion(logits, yb)
 
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()

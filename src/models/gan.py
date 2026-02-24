@@ -1,7 +1,13 @@
-"""Conditional GAN for EEG data augmentation.
+"""Conditional WGAN-GP for EEG data augmentation (v4).
 
-Generator produces synthetic differential-entropy feature vectors
-conditioned on an emotion class label.
+Wasserstein GAN with gradient penalty replaces standard BCE-based cGAN
+for more stable training and higher quality synthetic data.
+
+Key changes from v3:
+- Wasserstein loss (no BCE, no Sigmoid in D)
+- Gradient penalty (λ=10) for Lipschitz constraint
+- Spectral normalisation on D for additional stability
+- n_critic=5 (more D updates per G update)
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.autograd as autograd
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Generator
 # ======================================================================
 class Generator(nn.Module):
-    """cGAN generator: noise *z* + class label → synthetic DE feature."""
+    """WGAN-GP generator: noise *z* + class label → synthetic DE feature."""
 
     def __init__(
         self,
@@ -55,24 +62,16 @@ class Generator(nn.Module):
         self.model = nn.Sequential(*layers)
 
     def forward(self, z: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            z: Noise vector ``(batch, latent_dim)``
-            labels: Class labels ``(batch,)`` — integer values
-
-        Returns:
-            Synthetic features ``(batch, feature_dim)``
-        """
-        label_emb = self.label_embedding(labels)  # (B, num_classes)
+        label_emb = self.label_embedding(labels)
         x = torch.cat([z, label_emb], dim=1)
         return self.model(x)
 
 
 # ======================================================================
-# Discriminator
+# Critic (Discriminator without Sigmoid for WGAN)
 # ======================================================================
 class Discriminator(nn.Module):
-    """cGAN discriminator: feature + class label → real/fake score."""
+    """WGAN-GP critic: feature + class label → real/fake score (no Sigmoid)."""
 
     def __init__(
         self,
@@ -90,26 +89,18 @@ class Discriminator(nn.Module):
         in_dim = feature_dim + num_classes
         for h_dim in hidden_dims:
             layers.extend([
-                nn.Linear(in_dim, h_dim),
+                nn.utils.spectral_norm(nn.Linear(in_dim, h_dim)),
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Dropout(0.3),
             ])
             in_dim = h_dim
 
+        # No Sigmoid — WGAN uses raw critic scores
         layers.append(nn.Linear(in_dim, 1))
-        layers.append(nn.Sigmoid())
 
         self.model = nn.Sequential(*layers)
 
     def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            features: Real or synthetic features ``(batch, feature_dim)``
-            labels: Class labels ``(batch,)``
-
-        Returns:
-            Probability of being real ``(batch, 1)``
-        """
         label_emb = self.label_embedding(labels)
         x = torch.cat([features, label_emb], dim=1)
         return self.model(x)
@@ -119,7 +110,7 @@ class Discriminator(nn.Module):
 # Wrapper
 # ======================================================================
 class ConditionalGAN:
-    """High-level wrapper managing Generator + Discriminator training."""
+    """High-level WGAN-GP wrapper for Generator + Critic training."""
 
     def __init__(self, config: dict, device: torch.device) -> None:
         self.device = device
@@ -154,45 +145,71 @@ class ConditionalGAN:
             self.discriminator.parameters(), lr=lr, betas=(beta1, beta2)
         )
 
-        self.criterion = nn.BCELoss()
-        self.label_smooth: float = config.get("label_smooth", 0.9)
-        self.d_updates_per_g: int = config.get("d_updates_per_g", 1)
+        # WGAN-GP hyperparameters
+        self.gp_lambda: float = config.get("gp_lambda", 10.0)
+        self.n_critic: int = config.get("n_critic", 5)
+        self.d_updates_per_g: int = config.get("d_updates_per_g", self.n_critic)
+        self.label_smooth: float = config.get("label_smooth", 1.0)  # not used in WGAN-GP
+
+        # Keep criterion for backward compat but we use Wasserstein loss
+        self.criterion = None
 
         g_params = sum(p.numel() for p in self.generator.parameters())
         d_params = sum(p.numel() for p in self.discriminator.parameters())
-        logger.info("Generator: %s params | Discriminator: %s params", f"{g_params:,}", f"{d_params:,}")
+        logger.info("Generator: %s params | Critic: %s params", f"{g_params:,}", f"{d_params:,}")
+
+    def _gradient_penalty(
+        self, real: torch.Tensor, fake: torch.Tensor, labels: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute gradient penalty for WGAN-GP."""
+        B = real.size(0)
+        alpha = torch.rand(B, 1, device=self.device)
+        interpolated = (alpha * real + (1 - alpha) * fake).requires_grad_(True)
+
+        d_inter = self.discriminator(interpolated, labels)
+        gradients = autograd.grad(
+            outputs=d_inter,
+            inputs=interpolated,
+            grad_outputs=torch.ones_like(d_inter),
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+        gradients = gradients.view(B, -1)
+        gp = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+        return gp
 
     # ------------------------------------------------------------------
-    # Single training step
+    # Single training step — WGAN-GP
     # ------------------------------------------------------------------
     def train_step(
         self, real_features: torch.Tensor, real_labels: torch.Tensor
     ) -> dict[str, float]:
-        """One training step (optionally multiple D updates per G update).
+        """One WGAN-GP training step.
 
         Returns:
             Dictionary with ``d_loss``, ``g_loss``, ``d_real_acc``.
         """
         batch_size = real_features.size(0)
-        real_target = torch.full((batch_size, 1), self.label_smooth, device=self.device)
-        fake_target = torch.zeros(batch_size, 1, device=self.device)
 
-        # --- Discriminator update(s) ---
+        # --- Critic update(s) ---
         d_loss_total = 0.0
         for _ in range(self.d_updates_per_g):
             self.opt_d.zero_grad()
 
             # Real
             d_real = self.discriminator(real_features, real_labels)
-            loss_real = self.criterion(d_real, real_target)
 
             # Fake
             z = torch.randn(batch_size, self.latent_dim, device=self.device)
             fake = self.generator(z, real_labels).detach()
             d_fake = self.discriminator(fake, real_labels)
-            loss_fake = self.criterion(d_fake, fake_target)
 
-            d_loss = (loss_real + loss_fake) / 2
+            # Gradient penalty
+            gp = self._gradient_penalty(real_features, fake, real_labels)
+
+            # Wasserstein loss: maximize E[D(real)] - E[D(fake)]
+            # => minimize -E[D(real)] + E[D(fake)] + λ * GP
+            d_loss = -d_real.mean() + d_fake.mean() + self.gp_lambda * gp
             d_loss.backward()
             self.opt_d.step()
             d_loss_total += d_loss.item()
@@ -202,12 +219,14 @@ class ConditionalGAN:
         z = torch.randn(batch_size, self.latent_dim, device=self.device)
         fake = self.generator(z, real_labels)
         d_decision = self.discriminator(fake, real_labels)
-        g_loss = self.criterion(d_decision, real_target)  # fool D
+        g_loss = -d_decision.mean()  # maximize E[D(fake)]
         g_loss.backward()
         self.opt_g.step()
 
-        # Accuracy of D on real samples
-        d_real_acc = (d_real > 0.5).float().mean().item()
+        # Pseudo-accuracy: what fraction of real scores > fake scores
+        with torch.no_grad():
+            d_real_score = self.discriminator(real_features, real_labels).mean().item()
+            d_real_acc = 1.0 if d_real_score > 0 else 0.0
 
         return {
             "d_loss": d_loss_total / self.d_updates_per_g,

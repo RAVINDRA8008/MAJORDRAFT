@@ -286,8 +286,8 @@ def main() -> None:
         n_heads=n_heads,
         n_layers=n_layers,
         num_classes=cfg.model.num_classes,
-        dropout=0.1,
-        modality_dropout_prob=0.1,
+        dropout=0.15,
+        modality_dropout_prob=0.15,
     )
 
     save_dir = ckpt / "v3"
