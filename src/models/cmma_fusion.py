@@ -1,24 +1,25 @@
-"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.
+"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.1.
 
 Novel architecture contributions
 ─────────────────────────────────
 1. **Cross-Modal Mutual Attention (CMMA)**: Bidirectional cross-attention
    where EEG attends to speech AND speech attends to EEG simultaneously,
    enabling each modality to discover complementary features from the other
-   *before* fusion.  This goes beyond v4's approach where encoders were
-   completely independent.
+   *before* fusion.
 
-2. **Emotion-Aware Gating (EAG)**: A learned per-class modality weighting
-   mechanism.  Different emotions rely differently on each modality (e.g.,
-   "Angry" may be more salient in speech prosody while "Sad" may show
-   stronger EEG signatures).  EAG learns a (num_classes x 2) gate matrix
-   that dynamically re-weights the modality contributions.
+2. **Emotion-Aware Gating (EAG)**: Sigmoid-based per-class modality gates.
+   Each class has a learnable gate logit → sigmoid → determines EEG/speech
+   balance.  Strong gradient flow (no softmax dead zone).
+   Additionally, input-dependent adjustment via a lightweight gate network
+   modulates the per-class weights based on the actual input features.
 
-3. **End-to-End Joint Training**: Unlike v4 where encoders were frozen
-   and only the fusion head was trained, v5 fine-tunes encoders jointly
-   with the CMMA layers and classification head.  A discriminative learning
-   rate schedule (lower LR for encoders, higher for new layers) prevents
-   catastrophic forgetting of pretrained representations.
+3. **Auxiliary Unimodal Losses**: Each modality gets a small classification
+   head that provides gradient signal directly to each encoder, ensuring
+   both produce class-discriminative features independently.
+
+4. **End-to-End Joint Training**: Encoders fine-tuned with very conservative
+   LR (0.05x), with frozen warmup phase to stabilize CMMA before encoder
+   gradients are enabled.
 
 Architecture
 ────────────
@@ -40,6 +41,8 @@ Architecture
     eeg_enhanced (B, d_model) ──┐
                                  ├─→ [Emotion-Aware Gate] ─→ [Classifier] ─→ logits
     sp_enhanced  (B, d_model) ──┘
+                                 ├─→ [Aux EEG Head]   ─→ eeg_logits  (auxiliary)
+                                 └─→ [Aux Speech Head] ─→ sp_logits   (auxiliary)
 
 Reference
 ─────────
@@ -97,10 +100,14 @@ class CMMABlock(nn.Module):
         self.norm_ca = nn.LayerNorm(d_model)
 
         # --- Gated residual for cross-attention ---
+        # Bias initialized to -2.0 so gate starts near 0.12 (conservative:
+        # mostly self-attention initially, learns to open as needed)
         self.cross_gate = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.Sigmoid(),
         )
+        # Initialize gate bias to -2.0 for conservative start
+        nn.init.constant_(self.cross_gate[0].bias, -2.0)
 
         # --- Feed-forward ---
         self.ff = nn.Sequential(
@@ -150,22 +157,23 @@ class CMMABlock(nn.Module):
 # ======================================================================
 
 class EmotionAwareGating(nn.Module):
-    """Learns per-class modality importance weights.
+    """Learns per-class modality importance weights via sigmoid gating.
 
-    Instead of treating EEG and speech equally, this module estimates
-    a probability distribution over emotions, then uses that to look up
-    learned modality weights for each class.  The final representation
-    is a weighted combination of EEG and speech features, where the
-    weights are emotion-dependent.
+    v5.1 fix: Uses SIGMOID instead of softmax to avoid the dead-gradient
+    zone where equal inputs (0.5, 0.5) produce near-zero gradients.
+    Each class has ONE learnable gate logit:
+        alpha = sigmoid(gate_logit)
+        w_eeg = alpha,  w_speech = 1 - alpha
 
-    This is novel because existing fusion methods use static or
-    input-dependent gates, but not *class-dependent* gates that learn
-    which modality is more informative for each specific emotion.
+    Additionally, an input-dependent gate network adjusts the per-class
+    weights based on the actual features — so the gating is both
+    class-aware AND input-aware.
 
     Forward:
         1. Estimate preliminary class probs from fused features
-        2. Look up per-class modality weights
-        3. Compute weighted sum: out = w_eeg * eeg + w_sp * speech
+        2. Per-class gate: sigmoid(logit) → EEG weight, 1 - sigmoid → speech
+        3. Input-dependent adjustment via lightweight gate network
+        4. Compute weighted sum: out = w_eeg * eeg + w_speech * speech
     """
 
     def __init__(
@@ -179,13 +187,20 @@ class EmotionAwareGating(nn.Module):
         self.emotion_probe = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.GELU(),
+            nn.Dropout(0.1),
             nn.Linear(d_model, num_classes),
         )
 
-        # Per-class modality weights: (num_classes, 2) — [eeg_weight, speech_weight]
-        # Initialized to 0.5/0.5 (equal) so training starts from balanced fusion
-        self.class_modality_weights = nn.Parameter(
-            torch.full((num_classes, 2), 0.5)
+        # Per-class gate logits: ONE scalar per class
+        # sigmoid(0) = 0.5 → equal starting point, but sigmoid gradient
+        # at x=0 is 0.25, much healthier than softmax([0.5, 0.5])
+        self.class_gate_logits = nn.Parameter(torch.zeros(num_classes))
+
+        # Input-dependent gate adjustment (adds to per-class gate)
+        self.input_gate = nn.Sequential(
+            nn.Linear(d_model * 2, d_model // 2),
+            nn.GELU(),
+            nn.Linear(d_model // 2, 1),
         )
 
         self.d_model = d_model
@@ -204,24 +219,35 @@ class EmotionAwareGating(nn.Module):
         Returns:
             fused: (B, d_model) — emotion-aware fused representation
         """
-        # Preliminary emotion estimate
         combined = torch.cat([eeg_feat, speech_feat], dim=-1)  # (B, 2*d_model)
+
+        # Preliminary emotion estimate
         emotion_logits = self.emotion_probe(combined)  # (B, num_classes)
         emotion_probs = F.softmax(emotion_logits, dim=-1)  # (B, num_classes)
 
-        # Normalize class modality weights to sum to 1 per class
-        weights = F.softmax(self.class_modality_weights, dim=-1)  # (num_classes, 2)
+        # Per-class EEG weights via sigmoid (strong gradient at 0)
+        class_alpha = torch.sigmoid(self.class_gate_logits)  # (num_classes,)
 
-        # Weighted combination: (B, num_classes) @ (num_classes, 2) → (B, 2)
-        modality_weights = emotion_probs @ weights  # (B, 2)
+        # Weighted class gate: (B, num_classes) @ (num_classes,) → (B,)
+        base_alpha = (emotion_probs * class_alpha.unsqueeze(0)).sum(dim=-1, keepdim=True)
 
-        w_eeg = modality_weights[:, 0:1]    # (B, 1)
-        w_speech = modality_weights[:, 1:2]  # (B, 1)
+        # Input-dependent adjustment
+        input_adj = self.input_gate(combined)  # (B, 1)
+        alpha = torch.sigmoid(base_alpha + input_adj)  # (B, 1) — final EEG weight
 
         # Emotion-aware fusion
-        fused = w_eeg * eeg_feat + w_speech * speech_feat  # (B, d_model)
+        fused = alpha * eeg_feat + (1 - alpha) * speech_feat  # (B, d_model)
 
         return fused
+
+    def get_emotion_logits(
+        self,
+        eeg_feat: torch.Tensor,
+        speech_feat: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return emotion probe logits for auxiliary loss."""
+        combined = torch.cat([eeg_feat, speech_feat], dim=-1)
+        return self.emotion_probe(combined)
 
 
 # ======================================================================
@@ -296,6 +322,22 @@ class CMMAFusionClassifier(nn.Module):
         # --- Emotion-Aware Gating ---
         self.emotion_gate = EmotionAwareGating(d_model, num_classes)
 
+        # --- Auxiliary unimodal classification heads ---
+        # These provide direct gradient signal to each encoder,
+        # ensuring both produce class-discriminative features
+        self.aux_eeg_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, num_classes),
+        )
+        self.aux_speech_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, num_classes),
+        )
+
         # --- Classification head ---
         self.classifier = nn.Sequential(
             nn.Linear(d_model, d_model),
@@ -343,14 +385,17 @@ class CMMAFusionClassifier(nn.Module):
         self,
         eeg_embedding: torch.Tensor,
         speech_embedding: torch.Tensor,
-    ) -> torch.Tensor:
+        return_aux: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         """
         Args:
             eeg_embedding: (B, eeg_embed_dim) — from EEG encoder
             speech_embedding: (B, speech_embed_dim) — from Speech encoder
+            return_aux: if True, also return auxiliary logits dict
 
         Returns:
             logits: (B, num_classes)
+            [optional] aux_dict: {'eeg_logits', 'speech_logits', 'probe_logits'}
         """
         # --- Modality dropout (training only) ---
         if self.training and self.modality_dropout_prob > 0:
@@ -388,6 +433,14 @@ class CMMAFusionClassifier(nn.Module):
         # --- Classify ---
         logits = self.classifier(fused)  # (B, num_classes)
 
+        if return_aux:
+            aux = {
+                'eeg_logits': self.aux_eeg_head(eeg_cls),
+                'speech_logits': self.aux_speech_head(sp_cls),
+                'probe_logits': self.emotion_gate.get_emotion_logits(eeg_cls, sp_cls),
+            }
+            return logits, aux
+
         return logits
 
     def get_modality_weights(self) -> torch.Tensor:
@@ -396,7 +449,8 @@ class CMMAFusionClassifier(nn.Module):
         Returns:
             (num_classes, 2) tensor — [eeg_weight, speech_weight] per class
         """
-        return F.softmax(self.emotion_gate.class_modality_weights, dim=-1).detach()
+        alpha = torch.sigmoid(self.emotion_gate.class_gate_logits).detach()
+        return torch.stack([alpha, 1 - alpha], dim=-1)  # (num_classes, 2)
 
     def get_attention_maps(
         self,

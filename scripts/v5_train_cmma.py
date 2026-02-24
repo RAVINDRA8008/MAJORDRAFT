@@ -178,12 +178,15 @@ class CMMATrainer:
         self.epochs = _g("epochs", 80)
         self.batch_size = _g("batch_size", 64)
         self.lr = _g("lr", 3e-4)
-        self.encoder_lr_factor = _g("encoder_lr_factor", 0.1)
+        self.encoder_lr_factor = _g("encoder_lr_factor", 0.05)  # v5.1: more conservative
+        self.eag_lr_factor = _g("eag_lr_factor", 3.0)  # v5.1: higher LR for EAG
         self.patience = _g("patience", 20)
         self.warmup_epochs = _g("warmup_epochs", 5)
+        self.freeze_encoder_epochs = _g("freeze_encoder_epochs", 8)  # v5.1: freeze encoders initially
         self.weight_decay = _g("weight_decay", 1e-4)
-        self.samples_per_epoch = _g("samples_per_epoch", 8000)
+        self.samples_per_epoch = _g("samples_per_epoch", 10000)  # v5.1: more samples
         self.grad_clip = _g("grad_clip", 1.0)
+        self.aux_loss_weight = _g("aux_loss_weight", 0.2)  # v5.1: auxiliary unimodal loss weight
 
     def fit(
         self,
@@ -224,19 +227,28 @@ class CMMATrainer:
             gamma=2.0, weight=weights.to(self.device), label_smoothing=0.1,
         )
 
-        # --- Discriminative learning rates ---
+        # --- Discriminative learning rates (3 groups) ---
         encoder_params = list(eeg_encoder.parameters()) + list(speech_encoder.parameters())
-        cmma_params = list(cmma.parameters())
-
-        # Remove encoder params that might overlap (shouldn't, but safety)
         encoder_param_ids = set(id(p) for p in encoder_params)
-        cmma_only_params = [p for p in cmma_params if id(p) not in encoder_param_ids]
+
+        # Separate EAG gate logits (need higher LR) from rest of CMMA
+        eag_params = []
+        cmma_other_params = []
+        for name, p in cmma.named_parameters():
+            if id(p) in encoder_param_ids:
+                continue
+            if 'class_gate_logits' in name or 'input_gate' in name:
+                eag_params.append(p)
+            else:
+                cmma_other_params.append(p)
 
         optimizer = torch.optim.AdamW([
             {"params": encoder_params, "lr": self.lr * self.encoder_lr_factor,
              "weight_decay": self.weight_decay},
-            {"params": cmma_only_params, "lr": self.lr,
+            {"params": cmma_other_params, "lr": self.lr,
              "weight_decay": self.weight_decay},
+            {"params": eag_params, "lr": self.lr * self.eag_lr_factor,
+             "weight_decay": 0.0},  # no weight decay on gate params
         ])
 
         # --- Scheduler ---
@@ -275,16 +287,31 @@ class CMMATrainer:
         patience_counter = 0
 
         print(f"\n{'='*60}")
-        print(f"  v5 CMMA End-to-End Training")
+        print(f"  v5.1 CMMA End-to-End Training")
         print(f"  Epochs: {self.epochs}, Batch: {self.batch_size}")
         print(f"  CMMA LR: {self.lr}, Encoder LR: {self.lr * self.encoder_lr_factor}")
+        print(f"  EAG LR: {self.lr * self.eag_lr_factor}")
+        print(f"  Freeze encoders: first {self.freeze_encoder_epochs} epochs")
         print(f"  Warmup: {self.warmup_epochs} epochs, Patience: {self.patience}")
+        print(f"  Aux loss weight: {self.aux_loss_weight}")
         print(f"  Samples/epoch: {self.samples_per_epoch}")
         print(f"{'='*60}\n")
+
+        # Start with encoders frozen
+        for p in encoder_params:
+            p.requires_grad_(False)
+        encoders_frozen = True
 
         t0 = time.time()
 
         for epoch in range(1, self.epochs + 1):
+            # --- Unfreeze encoders after warmup phase ---
+            if encoders_frozen and epoch > self.freeze_encoder_epochs:
+                for p in encoder_params:
+                    p.requires_grad_(True)
+                encoders_frozen = False
+                print(f"  [epoch {epoch}] Encoders unfrozen (lr={self.lr * self.encoder_lr_factor:.1e})")
+
             # --- Train ---
             eeg_encoder.train()
             speech_encoder.train()
@@ -301,8 +328,21 @@ class CMMATrainer:
                     # End-to-end: raw → encode → CMMA → classify
                     eeg_emb = eeg_encoder(eeg_raw)
                     sp_emb = speech_encoder(sp_raw)
-                    logits = cmma(eeg_emb, sp_emb)
-                    loss = criterion(logits, labels)
+                    logits, aux = cmma(eeg_emb, sp_emb, return_aux=True)
+
+                    # Main classification loss
+                    loss_main = criterion(logits, labels)
+
+                    # Auxiliary unimodal losses (force each modality to be discriminative)
+                    loss_eeg_aux = criterion(aux['eeg_logits'], labels)
+                    loss_sp_aux = criterion(aux['speech_logits'], labels)
+                    loss_probe = criterion(aux['probe_logits'], labels)
+
+                    # Total loss
+                    loss = (loss_main
+                            + self.aux_loss_weight * loss_eeg_aux
+                            + self.aux_loss_weight * loss_sp_aux
+                            + 0.1 * loss_probe)  # probe is lightweight supervision
 
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
@@ -355,7 +395,7 @@ class CMMATrainer:
             history["val_acc"].append(v_acc)
 
             lrs = scheduler.get_lr()
-            lr_str = f"enc_lr={lrs[0]:.1e} cmma_lr={lrs[1]:.1e}"
+            lr_str = f"enc_lr={lrs[0]:.1e} cmma_lr={lrs[1]:.1e} eag_lr={lrs[2]:.1e}"
 
             if epoch % 5 == 0 or epoch == 1 or epoch == self.epochs:
                 print(
