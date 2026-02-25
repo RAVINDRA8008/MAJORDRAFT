@@ -1,4 +1,4 @@
-"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.7.
+"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.8.
 
 Novel architecture contributions
 ─────────────────────────────────
@@ -13,11 +13,15 @@ Novel architecture contributions
    Additionally, input-dependent adjustment via a lightweight gate network
    modulates the per-class weights based on the actual input features.
 
-3. **Auxiliary Unimodal Losses**: Each modality gets a small classification
+3. **Stochastic Depth (DropPath)**: (v5.8) Randomly skip entire CMMA
+   blocks during training with linearly increasing probability across
+   layers.  Creates an implicit ensemble of different-depth sub-networks.
+
+4. **Auxiliary Unimodal Losses**: Each modality gets a small classification
    head that provides gradient signal directly to each encoder, ensuring
    both produce class-discriminative features independently.
 
-4. **End-to-End Joint Training**: Encoders fine-tuned with very conservative
+5. **End-to-End Joint Training**: Encoders fine-tuned with very conservative
    LR (0.05x), with frozen warmup phase to stabilize CMMA before encoder
    gradients are enabled.
 
@@ -61,6 +65,36 @@ import torch.nn.functional as F
 
 
 # ======================================================================
+# Stochastic Depth (DropPath) — v5.8
+# ======================================================================
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample during training.
+
+    During training, randomly zeroes entire residual branches with
+    probability `drop_prob`.  At test time, acts as identity.
+    References: Huang et al., "Deep Networks with Stochastic Depth", 2016.
+    Used in DeiT, Swin Transformer, BEiT, etc.
+    """
+
+    def __init__(self, drop_prob: float = 0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training or self.drop_prob == 0.0:
+            return x
+        keep_prob = 1.0 - self.drop_prob
+        # Per-sample binary mask: (B, 1, 1, ...) to broadcast
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        mask = (torch.rand(shape, dtype=x.dtype, device=x.device) < keep_prob).to(x.dtype)
+        return x * mask / keep_prob
+
+    def extra_repr(self) -> str:
+        return f"drop_prob={self.drop_prob:.3f}"
+
+
+# ======================================================================
 # Cross-Modal Mutual Attention Block
 # ======================================================================
 
@@ -76,6 +110,8 @@ class CMMABlock(nn.Module):
     The gated residual is novel: instead of simply adding the cross-attention
     output, a sigmoid gate controls the mixing ratio, allowing the model to
     learn *how much* to trust the other modality per token.
+
+    v5.8: DropPath (stochastic depth) on cross-attention and FFN residuals.
     """
 
     def __init__(
@@ -84,6 +120,7 @@ class CMMABlock(nn.Module):
         n_heads: int = 4,
         ff_dim: int = 512,
         dropout: float = 0.1,
+        drop_path: float = 0.0,
     ) -> None:
         super().__init__()
 
@@ -119,6 +156,9 @@ class CMMABlock(nn.Module):
         )
         self.norm_ff = nn.LayerNorm(d_model)
 
+        # v5.8: Stochastic depth on cross-attn and FFN residuals
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
     def forward(
         self,
         x: torch.Tensor,
@@ -143,11 +183,11 @@ class CMMABlock(nn.Module):
 
         # Gate: learn how much cross-modal info to inject
         gate = self.cross_gate(torch.cat([x, ca_out], dim=-1))  # (B, S, d_model)
-        x = x + gate * ca_out
+        x = x + self.drop_path(gate * ca_out)
 
         # 3. Feed-forward with pre-norm + residual
         h = self.norm_ff(x)
-        x = x + self.ff(h)
+        x = x + self.drop_path(self.ff(h))
 
         return x
 
@@ -298,6 +338,7 @@ class CMMAFusionClassifier(nn.Module):
         num_classes: int = 4,
         dropout: float = 0.1,
         modality_dropout_prob: float = 0.1,
+        drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()
         self.modality_dropout_prob = modality_dropout_prob
@@ -324,13 +365,15 @@ class CMMAFusionClassifier(nn.Module):
         self.sp_norm = nn.LayerNorm(d_model)
 
         # --- CMMA layers (bidirectional) ---
+        # v5.8: linearly increasing drop path rate across layers
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, n_cmma_layers)]
         self.eeg_cmma_layers = nn.ModuleList([
-            CMMABlock(d_model, n_heads, ff_dim, dropout)
-            for _ in range(n_cmma_layers)
+            CMMABlock(d_model, n_heads, ff_dim, dropout, drop_path=dpr[i])
+            for i in range(n_cmma_layers)
         ])
         self.sp_cmma_layers = nn.ModuleList([
-            CMMABlock(d_model, n_heads, ff_dim, dropout)
-            for _ in range(n_cmma_layers)
+            CMMABlock(d_model, n_heads, ff_dim, dropout, drop_path=dpr[i])
+            for i in range(n_cmma_layers)
         ])
 
         # Output norms
