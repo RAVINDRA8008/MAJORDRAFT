@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
-"""v5.8 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
+"""v5.7 — Train CMMA (Cross-Modal Mutual Attention) fusion end-to-end.
 
-Builds on v5.3 (82.55%) with three proven, complementary improvements:
-1. **R-Drop** (α=1.0): Forward each batch twice with different dropout masks,
-   add symmetric KL divergence between the two output distributions.
-   Proven regularizer for small-dataset transformers (Microsoft Research).
-2. **Input augmentation**: Gaussian noise on EEG features (σ=0.05),
-   SpecAugment-style time/freq masking on speech MFCCs.
-3. **Stochastic Depth (DropPath)**: Linearly increasing drop probability
-   across CMMA layers (0 → 0.1).  Implicit ensemble of sub-networks.
-
-All other hyperparameters identical to v5.3.
+Clean revert to v5.3 logic (82.55% on Feb 24th).
+v5.4–5.6 experimental features (EMA, mixup, confidence penalty, deterministic
+val, extra regularization) all caused regressions.  This version strips them
+out and returns to the known-good configuration.
 
 Architecture
 ────────────
 1. End-to-end training: encoders fine-tuned jointly with CMMA layers
 2. Discriminative LR: encoders get 0.05x LR to preserve representations
-3. Cross-modal mutual attention with gated cross-attention + DropPath
+3. Cross-modal mutual attention with gated cross-attention
 4. Emotion-aware gating: per-class modality weights via annealed TF
 5. Gate diversity loss: prevents modality weight collapse
-6. R-Drop consistency regularization + input-level data augmentation
 
 Usage:
     python scripts/v5_train_cmma.py
@@ -125,51 +118,46 @@ class E2ELabelAlignedDataset(Dataset):
         return eeg_pool[eeg_idx], sp_pool[sp_idx], c
 
 
-# ======================================================================
-# Input Augmentation (v5.8)
-# ======================================================================
+class FixedPairValDataset(Dataset):
+    """Deterministic validation dataset with pre-computed fixed pairs.
 
-class InputAugment:
-    """Input-level data augmentation for training (v5.8).
-
-    EEG:    Additive Gaussian noise — creates diverse input views
-            without distorting the underlying DE features.
-    Speech: SpecAugment-style random time and frequency masking
-            on raw MFCCs — proven standard for speech robustness.
-
-    Applied ONCE per batch, BEFORE both R-Drop forward passes.
+    v5.6 fix: random pairing in validation caused noisy accuracy and
+    made raw-vs-EMA comparison unreliable (different data each pass).
+    This dataset generates all pairs once with a fixed seed.
     """
 
-    def __init__(self, eeg_noise_std: float = 0.05,
-                 time_mask_max: int = 10, freq_mask_max: int = 5):
-        self.eeg_noise_std = eeg_noise_std
-        self.time_mask_max = time_mask_max
-        self.freq_mask_max = freq_mask_max
+    def __init__(
+        self,
+        eeg_features: np.ndarray,
+        eeg_labels: np.ndarray,
+        speech_features: np.ndarray,
+        speech_labels: np.ndarray,
+        num_classes: int = 4,
+        samples: int = 2000,
+        seed: int = 42,
+    ):
+        rng = np.random.RandomState(seed)
+        per_class = samples // num_classes
 
-    def augment_eeg(self, x: torch.Tensor) -> torch.Tensor:
-        """Add Gaussian noise to EEG features.  x: (B, D)."""
-        return x + torch.randn_like(x) * self.eeg_noise_std
+        eeg_list, sp_list, lbl_list = [], [], []
+        for c in range(num_classes):
+            eeg_pool = eeg_features[eeg_labels == c]
+            sp_pool = speech_features[speech_labels == c]
+            eeg_idxs = rng.randint(0, len(eeg_pool), size=per_class)
+            sp_idxs = rng.randint(0, len(sp_pool), size=per_class)
+            eeg_list.append(torch.as_tensor(eeg_pool[eeg_idxs], dtype=torch.float32))
+            sp_list.append(torch.as_tensor(sp_pool[sp_idxs], dtype=torch.float32))
+            lbl_list.append(torch.full((per_class,), c, dtype=torch.long))
 
-    def augment_speech(self, x: torch.Tensor) -> torch.Tensor:
-        """SpecAugment-style masking on speech MFCCs.  x: (B, F, T)."""
-        B, F, T = x.shape
-        out = x.clone()
+        self.eeg = torch.cat(eeg_list, dim=0)
+        self.sp = torch.cat(sp_list, dim=0)
+        self.labels = torch.cat(lbl_list, dim=0)
 
-        # Time masking: zero out contiguous time frames
-        if self.time_mask_max > 0:
-            t_len = torch.randint(0, self.time_mask_max + 1, (1,)).item()
-            if t_len > 0 and T > t_len:
-                t_start = torch.randint(0, T - t_len, (1,)).item()
-                out[:, :, t_start:t_start + t_len] = 0
+    def __len__(self):
+        return len(self.labels)
 
-        # Frequency masking: zero out contiguous frequency bins
-        if self.freq_mask_max > 0:
-            f_len = torch.randint(0, self.freq_mask_max + 1, (1,)).item()
-            if f_len > 0 and F > f_len:
-                f_start = torch.randint(0, F - f_len, (1,)).item()
-                out[:, f_start:f_start + f_len, :] = 0
-
-        return out
+    def __getitem__(self, idx):
+        return self.eeg[idx], self.sp[idx], self.labels[idx].item()
 
 
 # ======================================================================
@@ -204,6 +192,37 @@ class WarmupCosineScheduler:
 
     def get_lr(self):
         return [pg['lr'] for pg in self.optimizer.param_groups]
+
+
+# ======================================================================
+# Exponential Moving Average (v5.4)
+# ======================================================================
+
+class ModelEMA:
+    """Exponential Moving Average of model parameters.
+
+    Maintains shadow copies updated as:
+        shadow = decay * shadow + (1 - decay) * current
+    with warmup: actual_decay = min(decay, (1+steps)/(10+steps)).
+    """
+
+    def __init__(self, model: nn.Module, decay: float = 0.998):
+        self.decay = decay
+        self.shadow = {k: v.clone().detach() for k, v in model.state_dict().items()}
+        self.num_updates = 0
+
+    @torch.no_grad()
+    def update(self, model: nn.Module):
+        self.num_updates += 1
+        d = min(self.decay, (1 + self.num_updates) / (10 + self.num_updates))
+        for k, v in model.state_dict().items():
+            if v.is_floating_point():
+                self.shadow[k].mul_(d).add_(v, alpha=1 - d)
+            else:
+                self.shadow[k].copy_(v)
+
+    def state_dict(self):
+        return {k: v.clone() for k, v in self.shadow.items()}
 
 
 # ======================================================================
@@ -249,14 +268,6 @@ class CMMATrainer:
         self.tf_anneal_epochs = _g("tf_anneal_epochs", 25)  # v5.3: anneal TF from 1→0
         self.gate_div_weight = _g("gate_div_weight", 0.1)  # v5.3: gate diversity loss
         self.label_smoothing = _g("label_smoothing", 0.1)  # v5.3 value
-
-        # v5.8: R-Drop + input augmentation
-        self.rdrop_alpha = _g("rdrop_alpha", 1.0)
-        self.input_augment = InputAugment(
-            eeg_noise_std=_g("eeg_noise_std", 0.05),
-            time_mask_max=_g("speech_time_mask", 10),
-            freq_mask_max=_g("speech_freq_mask", 5),
-        )
 
     def fit(
         self,
@@ -358,8 +369,7 @@ class CMMATrainer:
         patience_counter = 0
 
         print(f"\n{'='*60}")
-        print(f"  v5.8 CMMA End-to-End Training")
-        print(f"  New in v5.8: R-Drop (α={self.rdrop_alpha}), DropPath, InputAugment")
+        print(f"  v5.7 CMMA End-to-End Training (clean v5.3 revert)")
         print(f"  Epochs: {self.epochs}, Batch: {self.batch_size}")
         print(f"  CMMA LR: {self.lr}, Encoder LR: {self.lr * self.encoder_lr_factor}")
         print(f"  EAG LR: {self.lr * self.eag_lr_factor}")
@@ -403,62 +413,32 @@ class CMMATrainer:
                 labels = labels.to(self.device, non_blocking=True)
 
                 with autocast("cuda", enabled=self.use_amp):
-                    # v5.8: Input augmentation (applied once, before R-Drop)
-                    eeg_aug = self.input_augment.augment_eeg(eeg_raw)
-                    sp_aug = self.input_augment.augment_speech(sp_raw)
+                    # End-to-end: raw → encode → CMMA → classify
+                    eeg_emb = eeg_encoder(eeg_raw)
+                    sp_emb = speech_encoder(sp_raw)
 
-                    # v5.8: R-Drop — forward twice with different dropout masks
-                    eeg_emb1 = eeg_encoder(eeg_aug)
-                    sp_emb1 = speech_encoder(sp_aug)
-                    logits1, aux1 = cmma(
-                        eeg_emb1, sp_emb1, return_aux=True,
+                    logits, aux = cmma(
+                        eeg_emb, sp_emb, return_aux=True,
                         labels=labels, tf_ratio=tf_ratio,
                     )
 
-                    eeg_emb2 = eeg_encoder(eeg_aug)
-                    sp_emb2 = speech_encoder(sp_aug)
-                    logits2, aux2 = cmma(
-                        eeg_emb2, sp_emb2, return_aux=True,
-                        labels=labels, tf_ratio=tf_ratio,
-                    )
+                    # Main classification loss
+                    loss_main = criterion(logits, labels)
 
-                    # Average CE losses from both passes
-                    loss_main = 0.5 * (
-                        criterion(logits1, labels) + criterion(logits2, labels)
-                    )
-
-                    # v5.8: R-Drop symmetric KL divergence consistency loss
-                    p1 = F.log_softmax(logits1, dim=-1)
-                    p2 = F.log_softmax(logits2, dim=-1)
-                    rdrop_loss = 0.5 * (
-                        F.kl_div(p1, p2.exp(), reduction='batchmean')
-                        + F.kl_div(p2, p1.exp(), reduction='batchmean')
-                    )
-
-                    # Auxiliary unimodal losses (average both passes)
-                    loss_eeg_aux = 0.5 * (
-                        criterion(aux1['eeg_logits'], labels)
-                        + criterion(aux2['eeg_logits'], labels)
-                    )
-                    loss_sp_aux = 0.5 * (
-                        criterion(aux1['speech_logits'], labels)
-                        + criterion(aux2['speech_logits'], labels)
-                    )
-                    loss_probe = 0.5 * (
-                        criterion(aux1['probe_logits'], labels)
-                        + criterion(aux2['probe_logits'], labels)
-                    )
+                    # Auxiliary unimodal losses
+                    loss_eeg_aux = criterion(aux['eeg_logits'], labels)
+                    loss_sp_aux = criterion(aux['speech_logits'], labels)
+                    loss_probe = criterion(aux['probe_logits'], labels)
 
                     # Gate diversity loss (prevents gate logits from collapsing)
                     loss_div = cmma.emotion_gate.gate_diversity_loss()
 
-                    # Total loss
+                    # Total loss (v5.6: removed confidence penalty — it was backwards)
                     loss = (loss_main
                             + self.aux_loss_weight * loss_eeg_aux
                             + self.aux_loss_weight * loss_sp_aux
                             + 0.1 * loss_probe
-                            + self.gate_div_weight * loss_div
-                            + self.rdrop_alpha * rdrop_loss)
+                            + self.gate_div_weight * loss_div)
 
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()
@@ -474,9 +454,7 @@ class CMMATrainer:
                 scheduler.step()
 
                 train_loss += loss.item() * eeg_raw.size(0)
-                # Use averaged logits from both R-Drop passes
-                avg_logits = (logits1 + logits2) * 0.5
-                train_correct += (avg_logits.argmax(1) == labels).sum().item()
+                train_correct += (logits.argmax(1) == labels).sum().item()
                 train_total += eeg_raw.size(0)
 
             # --- Validate ---
@@ -549,7 +527,7 @@ class CMMATrainer:
 
         elapsed = time.time() - t0
         print(f"\n{'='*60}")
-        print(f"  v5.8 CMMA training complete in {elapsed:.0f}s")
+        print(f"  v5 CMMA training complete in {elapsed:.0f}s")
         print(f"  Best val accuracy: {best_val_acc:.2%}")
 
         # Print final modality weights
@@ -569,7 +547,7 @@ class CMMATrainer:
 # ======================================================================
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="v5.8: CMMA end-to-end training")
+    parser = argparse.ArgumentParser(description="v5: CMMA end-to-end training")
     parser.add_argument("--config", default="config/default.yaml")
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
@@ -666,7 +644,6 @@ def main() -> None:
         num_classes=cfg.model.num_classes,
         dropout=_g("dropout", 0.1),
         modality_dropout_prob=_g("modality_dropout", 0.1),
-        drop_path_rate=_g("drop_path_rate", 0.1),
     ).to(device)
 
     # Count parameters

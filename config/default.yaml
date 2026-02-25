@@ -168,7 +168,7 @@ v3:
     warmup_epochs: 5       # warm-up fusion before RL starts
 
 # ============================================================
-# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.8
+# v5 — Cross-Modal Mutual Attention (CMMA) end-to-end v5.7
 # ============================================================
 v5:
   # --- CMMA architecture ---
@@ -179,7 +179,6 @@ v5:
   ff_dim: 512
   dropout: 0.15            # v5.3 value
   modality_dropout: 0.05   # v5.1: reduced from 0.1 (was too aggressive)
-  drop_path_rate: 0.1      # v5.8: stochastic depth (linearly increasing 0→0.1)
 
   # --- End-to-end training ---
   epochs: 80
@@ -197,12 +196,6 @@ v5:
   tf_anneal_epochs: 25     # v5.3: anneal teacher forcing 1.0→0.0 over N epochs
   gate_div_weight: 0.1     # v5.3: gate diversity regularizer weight
   label_smoothing: 0.1     # v5.3 value
-
-  # --- v5.8: R-Drop + Input Augmentation ---
-  rdrop_alpha: 1.0         # R-Drop symmetric KL divergence weight
-  eeg_noise_std: 0.05      # Gaussian noise σ for EEG augmentation
-  speech_time_mask: 10     # SpecAugment max time mask width (of 120 frames)
-  speech_freq_mask: 5      # SpecAugment max freq mask width (of 80 bins)
 
 # ------ Logging ------
 logging:
