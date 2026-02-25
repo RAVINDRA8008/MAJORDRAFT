@@ -1,4 +1,4 @@
-"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.6.
+"""Cross-Modal Mutual Attention (CMMA) Fusion — v5.7.
 
 Novel architecture contributions
 ─────────────────────────────────
