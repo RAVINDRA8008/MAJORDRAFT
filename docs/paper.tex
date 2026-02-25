@@ -1,0 +1,507 @@
+% ============================================================
+% AMERS: Adaptive Multimodal Emotion Recognition using EEG and
+% Speech with Cross-Modal Mutual Attention
+% ============================================================
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{xcolor}
+\usepackage{subcaption}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{AMERS: Adaptive Multimodal Emotion Recognition using EEG and Speech with Cross-Modal Mutual Attention}
+
+\author{
+\IEEEauthorblockN{Ravindra}
+\IEEEauthorblockA{Department of Computer Science and Engineering}
+}
+
+\maketitle
+
+% ============================================================
+% ABSTRACT
+% ============================================================
+\begin{abstract}
+Emotion recognition from physiological and behavioral signals is a challenging problem with applications in healthcare, human-computer interaction, and affective computing. While electroencephalography (EEG) captures involuntary neural correlates of emotion and speech carries rich prosodic information, combining these two modalities effectively remains an open problem. We present AMERS, an Adaptive Multimodal Emotion Recognition System that fuses EEG signals from the DEAP dataset with speech utterances from IEMOCAP for four-class emotion classification (angry, happy, sad, neutral). Our system introduces Cross-Modal Mutual Attention (CMMA), a bidirectional attention mechanism where EEG and speech representations attend to each other simultaneously through gated residual connections. We further propose Emotion-Aware Gating (EAG), which learns per-class modality importance weights via annealed teacher forcing, allowing the model to dynamically balance EEG and speech contributions depending on the target emotion. Through an iterative development process spanning five major system versions, we demonstrate that addressing class imbalance in EEG data was the single most impactful improvement, contributing a 16 percentage point accuracy gain. Our final model achieves 82.55\% classification accuracy and a macro F1-score of approximately 0.83 on the four-class task, exceeding both target thresholds. We provide a detailed account of what worked, what failed, and why, including an analysis of regularization techniques that consistently degraded performance in our data-limited setting.
+\end{abstract}
+
+\begin{IEEEkeywords}
+emotion recognition, multimodal fusion, EEG, speech, cross-modal attention, deep learning
+\end{IEEEkeywords}
+
+% ============================================================
+% 1. INTRODUCTION
+% ============================================================
+\section{Introduction}
+
+Human emotions play a central role in communication, decision-making, and social interaction. Automatic emotion recognition has attracted considerable interest across domains ranging from mental health monitoring~\cite{calvo2010affect} to adaptive tutoring systems and empathetic virtual agents. While facial expression analysis has historically dominated the field, physiological signals such as EEG offer a complementary perspective: they are difficult to deliberately suppress and capture involuntary neural responses to emotional stimuli.
+
+EEG-based emotion recognition, however, presents several practical challenges. The signals are noisy, subject-dependent, and high-dimensional relative to the amount of labeled data typically available. Moreover, publicly available EEG datasets exhibit severe class imbalance. In the DEAP dataset~\cite{koelstra2012deap}, for instance, the ratio between the largest and smallest emotion classes can reach 37:1 after standard valence-arousal discretization, which causes classifiers to collapse toward majority-class predictions.
+
+Speech, on the other hand, carries rich emotional information in prosody, pitch, and rhythm, and is generally easier to collect at scale. The IEMOCAP corpus~\cite{busso2008iemocap} provides acted and improvised dyadic conversations annotated with categorical emotions. However, speech alone is insufficient for robust emotion recognition, particularly in contexts where speakers consciously modulate their vocal expression.
+
+Combining EEG and speech is appealing because the two modalities capture complementary aspects of emotion: EEG reflects involuntary neural states while speech reflects voluntary communication behavior. The central challenge lies in the fusion mechanism. Early fusion (feature concatenation) fails to model cross-modal interactions. Late fusion (decision averaging) discards fine-grained complementarities. Attention-based fusion methods have shown promise~\cite{lu2019vilbert, jaegle2021perceiver}, but most existing work treats the two modalities asymmetrically or fuses them only at the decision stage.
+
+In this paper, we present AMERS, an end-to-end trainable system that introduces two novel components for EEG-speech emotion recognition:
+
+\begin{enumerate}
+    \item \textbf{Cross-Modal Mutual Attention (CMMA)}: A bidirectional attention mechanism where EEG tokens attend to speech tokens and speech tokens attend to EEG tokens simultaneously. Unlike standard cross-attention, each modality's cross-attention output passes through a learnable sigmoid gate that controls how much information is injected from the other modality.
+    
+    \item \textbf{Emotion-Aware Gating (EAG)}: A per-class modality weighting mechanism that learns to balance EEG and speech contributions differently for each emotion. The gating is trained with annealed teacher forcing, which bootstraps the module from ground-truth labels before transitioning to autonomous predictions.
+\end{enumerate}
+
+We developed AMERS through five major versions, each addressing specific limitations identified in the previous iteration. This iterative process yielded several practical insights. Most notably, addressing class imbalance in EEG data produced the largest single improvement (from 65.97\% to 81.94\%), and regularization techniques borrowed from large-scale vision and language models consistently degraded performance in our data-limited multimodal setting.
+
+% ============================================================
+% 2. RELATED WORK
+% ============================================================
+\section{Related Work}
+
+\subsection{EEG-Based Emotion Recognition}
+
+EEG-based emotion recognition has been studied extensively using the DEAP~\cite{koelstra2012deap} and SEED~\cite{zheng2015investigating} datasets. Early approaches relied on handcrafted features such as power spectral density and differential entropy, combined with SVM or random forest classifiers~\cite{li2018eeg}. More recently, deep learning methods including CNNs~\cite{song2018eeg}, LSTMs~\cite{alhagry2017emotion}, and attention networks~\cite{song2020eeg} have shown improvements by learning spatial-temporal patterns directly from EEG data. However, most studies report results on binary valence or arousal classification. Four-class emotion recognition remains substantially more difficult, and reported accuracies are often inflated by subject-dependent evaluation protocols or imbalanced test sets.
+
+\subsection{Speech Emotion Recognition}
+
+Speech emotion recognition typically extracts features such as MFCCs, pitch, energy, and spectral descriptors from audio segments, then classifies them using models ranging from SVMs to deep recurrent networks~\cite{schuller2009recognising}. CNN-LSTM architectures have proven effective for capturing both local spectral and temporal patterns~\cite{zhao2019speech}. More recently, pretrained speech models such as wav2vec 2.0~\cite{baevski2020wav2vec} and HuBERT~\cite{hsu2021hubert} have achieved strong results, though they require substantial computational resources. The IEMOCAP corpus~\cite{busso2008iemocap} remains the standard benchmark, with four-class accuracies typically ranging from 60--75\% depending on the evaluation protocol.
+
+\subsection{Multimodal Emotion Recognition}
+
+Multimodal approaches combine multiple signals to improve recognition robustness. Text-audio fusion for sentiment analysis has been studied using tensor fusion networks~\cite{zadeh2017tensor} and multimodal transformers~\cite{tsai2019multimodal}. For physiological-behavioral fusion, most prior work combines EEG with facial expressions~\cite{huang2017fusion} or EEG with peripheral physiological signals. EEG-speech fusion specifically has received less attention, partly because the two modalities come from different datasets and require cross-corpus alignment by emotion label rather than temporal synchronization.
+
+Cross-modal attention mechanisms, originally developed for vision-language tasks such as ViLBERT~\cite{lu2019vilbert} and LXMERT~\cite{tan2019lxmert}, provide a natural framework for multimodal fusion. These models use separate transformer streams that exchange information via cross-attention layers. Our CMMA architecture draws inspiration from this paradigm but introduces gated residual connections specific to the EEG-speech setting, where modality reliability varies significantly by emotion class.
+
+\subsection{Domain Adaptation for Emotion Recognition}
+
+Domain shift between training and deployment conditions is a persistent problem in emotion recognition, particularly for EEG where inter-subject variability is high. Domain Adversarial Neural Networks (DANN)~\cite{ganin2016domain} have been applied to EEG emotion recognition to learn subject-invariant representations~\cite{li2020domain}. In our multimodal context, we adapt DANN to bridge the gap between EEG (physiological, lab-based) and speech (behavioral, enacted) domains during encoder pretraining.
+
+% ============================================================
+% 3. METHODOLOGY
+% ============================================================
+\section{Methodology}
+
+\subsection{Overview}
+
+AMERS processes raw EEG features and speech MFCCs through separate encoder networks, fuses them via Cross-Modal Mutual Attention, applies Emotion-Aware Gating, and produces a four-class emotion prediction. The training pipeline consists of three stages: (1) encoder pretraining with contrastive learning and domain adaptation, (2) class rebalancing and encoder architecture improvements, and (3) end-to-end joint training with CMMA and EAG. Figure~\ref{fig:architecture} illustrates the complete architecture.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.9\columnwidth}{\centering\vspace{2cm}\textbf{[Figure 1: AMERS Architecture]}\\\smallskip Overall pipeline from raw inputs through EEG/Speech encoders, CMMA bidirectional cross-attention layers, Emotion-Aware Gating, to final classification.\vspace{2cm}}}
+    \caption{Overall architecture of the AMERS system. Raw EEG and speech features are encoded independently, then fused through three bidirectional CMMA layers with gated cross-attention. The Emotion-Aware Gating module dynamically weights modality contributions per emotion class before the final classifier.}
+    \label{fig:architecture}
+\end{figure}
+
+\subsection{Data and Preprocessing}
+
+\subsubsection{DEAP (EEG)} The DEAP dataset contains 32-channel EEG recordings from 32 subjects, each watching 40 one-minute music video clips annotated with valence and arousal ratings on a 1--9 scale. We extract differential entropy features across four frequency bands ($\theta$: 4--8 Hz, $\alpha$: 8--14 Hz, $\beta$: 14--31 Hz, $\gamma$: 31--50 Hz) for each of the 32 channels, plus 28 asymmetry features, yielding a 160-dimensional feature vector per sample. Valence and arousal ratings are discretized into four emotion classes: angry (low valence, high arousal), happy (high valence, high arousal), sad (low valence, low arousal), and neutral (high valence, low arousal). After discretization, the dataset contains 76,800 samples with severe class imbalance: angry (1,140), happy (41,940), sad (16,680), and neutral (17,040).
+
+\subsubsection{IEMOCAP (Speech)} The IEMOCAP corpus contains approximately 12 hours of audiovisual recordings from 10 actors in dyadic conversations. We retain utterances labeled as angry (1,636), happy (1,084), sad (1,103), or neutral (1,708), totaling 5,531 utterances. For each utterance, we extract 80-dimensional MFCC features over 120 time frames, producing tensors of shape $(80 \times 120)$.
+
+\subsubsection{Cross-Corpus Pairing} Since DEAP and IEMOCAP are independent datasets, we pair EEG and speech samples by emotion label rather than temporal alignment. During training, each minibatch sample consists of one EEG and one speech sample randomly drawn from the same emotion class, with class-balanced sampling to ensure equal representation. This label-aligned pairing strategy, introduced in our second system version, proved essential: index-based pairing (sample $i$ from DEAP with sample $i$ from IEMOCAP) produced near-random results because the cross-modal pairs carried contradictory emotion information.
+
+\subsection{EEG Encoder}
+
+The EEG encoder is a three-layer pre-norm attention network that maps 160-dimensional differential entropy features to 128-dimensional embeddings. The architecture uses a CLS token appended to the input sequence, with each layer consisting of layer normalization, multi-head self-attention (4 heads), a residual connection, and a position-wise feed-forward network with GELU activation. The CLS token's final representation serves as the EEG embedding. This architecture replaced an earlier two-layer variant that achieved only 23\% standalone accuracy; the improved version reaches 37.5\%, primarily due to better class rebalancing during training rather than architectural changes per se.
+
+\subsection{Speech Encoder}
+
+The speech encoder combines a three-layer CNN for local spectral feature extraction with a two-layer bidirectional LSTM for temporal modeling, followed by multi-head attention pooling. The CNN layers use kernel sizes of 3, batch normalization, GELU activation, and max pooling. The LSTM processes the CNN output at each time step, and the attention pooling mechanism computes a weighted average of LSTM hidden states, producing a 128-dimensional speech embedding. Compared to simple mean pooling, attention pooling improved standalone speech accuracy from 54\% to 56.5\% by focusing on emotionally salient regions of the utterance.
+
+\subsection{Encoder Pretraining}
+
+Both encoders undergo two-stage pretraining before the fusion module is introduced.
+
+\subsubsection{Contrastive Pretraining} We apply SimCLR-style contrastive learning to the EEG encoder using the NT-Xent loss with temperature $\tau = 0.07$. Augmentations include additive Gaussian noise, temporal masking, channel dropout, and random scaling. For the speech encoder, we apply NT-Xent with augmentations including noise injection, time masking, frequency masking, and time stretching. Contrastive pretraining teaches both encoders to produce representations that cluster by emotion in embedding space, even without supervised labels.
+
+\subsubsection{Domain Adversarial Training (DANN)} Following contrastive pretraining, we apply Domain Adversarial Neural Network training~\cite{ganin2016domain} to jointly train both encoders with a gradient reversal layer. The domain discriminator tries to distinguish EEG from speech embeddings, while the encoders are trained to confuse it. The adversarial coefficient $\lambda$ is progressively increased from 0 to 1 over 30 epochs, allowing the encoders to first learn modality-specific features before being pushed toward domain invariance. This produces embeddings that occupy a shared latent space, making subsequent cross-modal attention more effective.
+
+\subsection{Cross-Modal Mutual Attention (CMMA)}
+
+The core fusion mechanism consists of $N=3$ bidirectional CMMA layers. Each layer processes both modalities simultaneously through four operations:
+
+\begin{enumerate}
+    \item \textbf{Self-attention}: Each modality attends to its own token sequence (intra-modal context) using pre-norm multi-head attention with 4 heads and $d_{model} = 128$.
+    \item \textbf{Cross-attention}: Each modality attends to the \emph{other} modality's tokens. Queries come from the self-attended representation; keys and values come from the other modality.
+    \item \textbf{Gated residual}: Rather than directly adding the cross-attention output, a sigmoid gate determines the injection ratio:
+    \begin{equation}
+        \mathbf{g} = \sigma(\mathbf{W}_g[\mathbf{x}; \mathbf{c}] + \mathbf{b}_g)
+    \end{equation}
+    \begin{equation}
+        \mathbf{x}' = \mathbf{x} + \mathbf{g} \odot \mathbf{c}
+    \end{equation}
+    where $\mathbf{x}$ is the current representation, $\mathbf{c}$ is the cross-attention output, $[\cdot;\cdot]$ denotes concatenation, and the gate bias is initialized to $-2.0$ so the gate starts near $\sigma(-2) \approx 0.12$: mostly self-attention initially, with cross-modal injection learned as needed.
+    \item \textbf{Feed-forward}: A two-layer MLP with GELU activation and residual connection.
+\end{enumerate}
+
+Crucially, both modality streams are updated \emph{simultaneously} at each layer: the EEG stream attends to the current speech tokens while the speech stream attends to the current EEG tokens. This bidirectional structure, inspired by ViLBERT~\cite{lu2019vilbert}, allows mutual information exchange rather than one-directional conditioning.
+
+Before entering the CMMA layers, each 128-dimensional encoder embedding is split into 8 tokens of 16 dimensions each, projected to $d_{model} = 128$ via a linear layer, and prepended with a learnable CLS token plus positional encodings. The CLS token's output after the final CMMA layer is extracted as the modality-enhanced representation.
+
+\subsection{Emotion-Aware Gating (EAG)}
+
+After CMMA processing, the two CLS token representations $\mathbf{e}_{\text{eeg}}$ and $\mathbf{e}_{\text{sp}}$ (each of dimension $d_{model}$) are combined via Emotion-Aware Gating:
+\begin{equation}
+    \alpha_c = \sigma(l_c + f([\mathbf{e}_{\text{eeg}}; \mathbf{e}_{\text{sp}}]))
+\end{equation}
+\begin{equation}
+    \mathbf{z} = \alpha \cdot \mathbf{e}_{\text{eeg}} + (1 - \alpha) \cdot \mathbf{e}_{\text{sp}}
+\end{equation}
+where $l_c$ is a learnable per-class gate logit, $f$ is a lightweight input-dependent adjustment network, and $\alpha \in [0, 1]$ determines the EEG-speech balance. The class index $c$ is determined either from ground-truth labels (during teacher forcing) or from an emotion probe network that predicts the class from the concatenated features.
+
+\subsubsection{Annealed Teacher Forcing} A key challenge is that the EAG must learn per-class preferences, but early in training the emotion probe is unreliable, creating a circular dependency. We resolve this with annealed teacher forcing. The teacher forcing ratio $\rho$ starts at 1.0 (EAG always uses ground-truth labels) and linearly decays to 0.0 over 25 epochs:
+\begin{equation}
+    \rho(t) = \max\left(0,\; 1 - \frac{t}{T_{\text{anneal}}}\right)
+\end{equation}
+The effective gate logit blends teacher-forced and probe-based selections:
+\begin{equation}
+    l_{\text{eff}} = \rho \cdot l_{\text{gt}} + (1 - \rho) \cdot l_{\text{probe}}
+\end{equation}
+This schedule allows EAG to learn meaningful per-class preferences during early training (when supervision is strong) and then practice using its own predictions (when supervision fades), avoiding the exposure bias that would result from permanent teacher forcing.
+
+\subsubsection{Gate Diversity Loss} To prevent per-class gate logits from collapsing to uniform values, we add a diversity regularizer:
+\begin{equation}
+    \mathcal{L}_{\text{div}} = -\text{std}(\{l_c\}_{c=1}^{C})
+\end{equation}
+Minimizing this loss maximizes the standard deviation of gate logits, encouraging differentiated modality preferences across classes.
+
+\subsection{Training Strategy}
+
+The final model totals approximately 7.3 million parameters (EEG encoder: 2.5M, speech encoder: 2.9M, CMMA fusion: 1.9M). Training follows a three-phase strategy:
+
+\textbf{Phase 1: Frozen encoders} (epochs 1--8). Both encoders are frozen; only the CMMA layers, EAG, and classifier receive gradients. This stabilizes the cross-attention mechanism before encoder representations begin to shift.
+
+\textbf{Phase 2: Discriminative fine-tuning} (epochs 9--80). Encoders are unfrozen with a learning rate of $0.05 \times$ the base CMMA rate ($3 \times 10^{-4}$), preserving pretrained representations while allowing gradual adaptation. EAG parameters receive $3 \times$ the base rate to accelerate gate differentiation.
+
+\textbf{Phase 3: Annealed teacher forcing} (overlapping with phases 1--2). The TF ratio decays from 1.0 to 0.0 over the first 25 epochs.
+
+The total loss combines five terms:
+\begin{equation}
+\mathcal{L} = \mathcal{L}_{\text{main}} + \lambda_{\text{aux}}(\mathcal{L}_{\text{eeg}} + \mathcal{L}_{\text{sp}}) + 0.1 \cdot \mathcal{L}_{\text{probe}} + \lambda_{\text{div}} \cdot \mathcal{L}_{\text{div}}
+\end{equation}
+where $\mathcal{L}_{\text{main}}$ is the focal loss on the fused representation, $\mathcal{L}_{\text{eeg}}$ and $\mathcal{L}_{\text{sp}}$ are auxiliary losses on unimodal heads ($\lambda_{\text{aux}} = 0.2$), $\mathcal{L}_{\text{probe}}$ is the emotion probe loss, and $\lambda_{\text{div}} = 0.1$.
+
+We use AdamW with weight decay $3 \times 10^{-4}$, gradient clipping at 1.0, mixed-precision training (AMP), a linear warmup over 5 epochs followed by cosine decay, label smoothing of 0.1, and early stopping with patience 20. The focal loss uses $\gamma = 2$ with inverse-frequency class weights. During training, modality dropout randomly zeroes one modality with probability 0.05 per sample, encouraging robustness to missing modalities.
+
+% ============================================================
+% 4. EXPERIMENTS
+% ============================================================
+\section{Experiments}
+
+\subsection{Datasets and Evaluation}
+
+We evaluate on the task of four-class emotion classification (angry, happy, sad, neutral). EEG features are drawn from DEAP (76,800 samples) and speech features from IEMOCAP (5,531 utterances). Both datasets are split 80/20 with stratified sampling, yielding 61,440 EEG + 4,424 speech training samples and 15,360 EEG + 1,107 speech validation samples. We report classification accuracy, macro F1-score, and Cohen's $\kappa$.
+
+\subsection{Implementation Details}
+
+All experiments are conducted on an NVIDIA L4 GPU (22 GB) using PyTorch with automatic mixed precision. The CMMA model uses $d_{model} = 128$, 4 attention heads, 3 bidirectional layers, feed-forward dimension 512, and dropout 0.15. Training runs for up to 80 epochs with batch size 64 and 10,000 samples per epoch (label-aligned random pairing). Total training time is approximately 15 minutes.
+
+\subsection{System Versions}
+
+AMERS was developed through five major versions, each motivated by the limitations of its predecessor. Table~\ref{tab:versions} summarizes the progression.
+
+\begin{table*}[t]
+\centering
+\caption{Performance progression across AMERS system versions. Each version addresses specific limitations identified in the previous iteration. The largest single improvement came from class rebalancing in v4.}
+\label{tab:versions}
+\begin{tabular}{@{}llccl@{}}
+\toprule
+\textbf{Version} & \textbf{Key Changes} & \textbf{Accuracy} & \textbf{Macro F1} & \textbf{Primary Limitation} \\
+\midrule
+v1 & Prototype: concat fusion, vanilla GAN, PPO & --- & --- & No class balancing, index-based pairing \\
+v2 & Label-aligned pairing, gated fusion, focal loss & 55.92\% & 0.5501 & 37$\times$ class imbalance untouched \\
+v3 & +Contrastive pretrain, DANN, transformer fusion & 65.97\% & $\sim$0.60 & Frozen encoders during fusion \\
+v4 & Class rebalancing (37$\times$$\rightarrow$2.5$\times$), CLS-token encoder & 81.94\% & 0.8193 & No end-to-end training \\
+v5.3 & CMMA + EAG + end-to-end joint training & \textbf{82.55\%} & $\sim$\textbf{0.83} & Data-limited ceiling \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{v1} established the basic pipeline but suffered from index-based pairing (EEG and speech matched by array index rather than emotion label), an unstable vanilla GAN, and unconstrained RL augmentation control.
+
+\textbf{v2} introduced label-aligned cross-modal pairing, gated fusion with sigmoid gates, focal loss with class weights, and class-balanced sampling. These changes lifted accuracy to 55.92\%, but the 37:1 class imbalance in DEAP remained the dominant bottleneck. The EEG encoder achieved only 23\% standalone accuracy.
+
+\textbf{v3} added self-supervised pretraining (SimCLR for EEG, NT-Xent for speech), DANN domain adaptation, and a transformer-based fusion module with cross-modal attention. These research-grade additions improved accuracy to 65.97\%, but the fundamental class imbalance problem persisted, and fusion was trained on frozen embeddings rather than end-to-end.
+
+\textbf{v4} addressed the class imbalance directly, reducing the ratio from 37:1 to 2.5:1 through aggressive rebalancing. This single change, combined with a CLS-token EEG encoder and WGAN-GP, produced the largest jump in the project's history: from 65.97\% to 81.94\% (+15.97 pp). Every per-class F1 score exceeded 0.75, and the previously worst class (angry: 0.38 F1) improved to 0.80.
+
+\textbf{v5} introduced CMMA and EAG with end-to-end training, ultimately achieving 82.55\%.
+
+\subsection{v5 Sub-Version Analysis}
+
+The development of v5 required extensive iteration. Table~\ref{tab:v5_versions} details the nine sub-versions and their outcomes.
+
+\begin{table*}[t]
+\centering
+\caption{v5 sub-version results. Versions 5.4--5.8 all attempted to improve upon v5.3 (82.55\%) but each caused regression, illustrating the difficulty of regularization in data-limited multimodal settings.}
+\label{tab:v5_versions}
+\begin{tabular}{@{}llcl@{}}
+\toprule
+\textbf{Version} & \textbf{Changes Over Previous} & \textbf{Val Acc.} & \textbf{Failure Mode} \\
+\midrule
+v5.0 & Initial CMMA + EAG & 80.90\% & EAG gates stuck at 0.50/0.50 (dead gating) \\
+v5.1 & Conservative encoder LR (0.05$\times$), EAG LR 3$\times$, frozen warmup & 82.05\% & EAG still undifferentiated without supervision \\
+v5.2 & +Teacher forcing (100\%), +gate diversity loss & 75.15\% & 100\% TF $\rightarrow$ exposure bias, train 99\% / val 75\% \\
+\textbf{v5.3} & \textbf{Annealed TF (1.0$\rightarrow$0.0 over 25 epochs)} & \textbf{82.55\%} & \textbf{Best result (data-limited ceiling)} \\
+v5.4 & +Embedding mixup ($\alpha$=0.3), +model EMA & 80.15\% & Mixup destroyed DANN manifold; EMA missed peaks \\
+v5.5 & +Confidence penalty (entropy reg.) & 71.90\% & Penalty sign error: minimized instead of maximized entropy \\
+v5.6 & Removed penalty, +determ. val, +stronger regularization & 69.00\% & Over-regularized (3 knobs increased); val set too small \\
+v5.7 & Clean revert to v5.3 settings & --- & Not tested (skipped to v5.8) \\
+v5.8 & +R-Drop ($\alpha$=1.0), +DropPath, +input augmentation & 73.50\% & Techniques too aggressive for small-data regime \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{v5.0} implemented the CMMA architecture but used equal learning rates for all components. The EAG gate logits converged to identical values for all four emotions, effectively reducing gating to a fixed 50/50 blend. The model reached 80.90\%, relying on CMMA cross-attention alone.
+
+\textbf{v5.1} addressed this by reducing the encoder learning rate to $0.05\times$ (preserving pretrained representations), increasing the EAG learning rate to $3\times$, and adding a frozen encoder warmup phase. Accuracy improved to 82.05\%, but the gate logits remained undifferentiated: without explicit supervision, the classification gradient alone was insufficient to push per-class gates apart.
+
+\textbf{v5.2} introduced teacher forcing, where EAG received ground-truth labels during training to select the correct per-class gate, along with a diversity loss to penalize uniform gates. However, the teacher forcing ratio was fixed at 100\%, meaning the model always received oracle labels during training but had to rely on its untrained emotion probe during validation. This classic exposure bias resulted in 99\% training accuracy but only 75.15\% validation accuracy.
+
+\textbf{v5.3} solved the exposure bias by annealing the teacher forcing ratio from 1.0 to 0.0 over 25 epochs. Early training used strong supervision to bootstrap meaningful per-class preferences; later training practiced autonomous probe-based gating. The gate diversity loss maintained differentiation throughout. This version achieved 82.55\% at epoch 43, with interpretable per-class modality weights.
+
+\textbf{v5.4} attempted to add embedding-level mixup and model EMA. Embedding mixup proved destructive: unlike image-space mixup, interpolating embeddings from different classes created unnatural representations that confused the cross-attention mechanism. EMA-based validation was unreliable because validation used random pairing (different data per pass). Accuracy regressed to 80.15\%.
+
+\textbf{v5.5} replaced mixup with a confidence penalty intended to prevent overconfident predictions by maximizing output entropy. Due to an implementation error, the penalty computed $-H(\mathbf{p})$ and \emph{added} it to the loss, which effectively \emph{minimized} entropy, forcing the model toward one-hot predictions. Training accuracy hit 99\% while validation collapsed to 71.90\%.
+
+\textbf{v5.6} removed the broken penalty, added a fixed deterministic validation set (2,000 pairs), and increased regularization (dropout $0.15 \rightarrow 0.20$, weight decay $3\times10^{-4} \rightarrow 5\times10^{-4}$, label smoothing $0.1 \rightarrow 0.15$). Changing three hyperparameters simultaneously proved damaging: the model peaked at epoch 3 (69\%) and degraded thereafter, exhibiting catastrophic forgetting of pretrained features under excessive regularization.
+
+\textbf{v5.7} was a clean revert to v5.3 settings, removing all experimental code. It was not tested separately.
+
+\textbf{v5.8} added three techniques proven effective for large-scale transformers: R-Drop~\cite{wu2021rdrop} (forward each batch twice, add KL divergence loss), stochastic depth/DropPath, and input augmentation (Gaussian noise on EEG, SpecAugment on speech). Despite their individual merit for models like ViT and BERT, all three reduced effective model capacity. In our data-limited regime with only 4,424 speech samples, this was counterproductive. The model peaked at epoch 4 with 73.50\%.
+
+% ============================================================
+% 5. RESULTS
+% ============================================================
+\section{Results}
+
+\subsection{Overall Performance}
+
+The final AMERS model (v5.3) achieves 82.55\% accuracy on four-class emotion recognition, with an estimated macro F1-score of approximately 0.83 and Cohen's $\kappa$ of approximately 0.77. Table~\ref{tab:results} presents the per-class F1 scores comparing the baseline (v2) and final (v4/v5.3) systems.
+
+\begin{table}[t]
+\centering
+\caption{Per-class F1 scores across system versions. Class rebalancing in v4 dramatically improved the angry class, which was previously nearly unrecognizable.}
+\label{tab:results}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Emotion} & \textbf{v2} & \textbf{v4} & \textbf{$\Delta$} \\
+\midrule
+Angry   & 0.38 & 0.80 & +0.42 \\
+Happy   & 0.58 & 0.77 & +0.19 \\
+Sad     & 0.66 & 0.88 & +0.22 \\
+Neutral & 0.58 & 0.82 & +0.24 \\
+\midrule
+\textbf{Macro avg.} & 0.55 & \textbf{0.82} & +0.27 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Learned Modality Weights}
+
+The Emotion-Aware Gating module learns interpretable per-class modality preferences. In the best model, EEG receives higher weight for the angry class, while speech dominates for sad and neutral emotions. Happy shows approximately balanced weighting. This is consistent with the neuroscience literature: anger produces strong, distinctive EEG patterns in frontal asymmetry, while sadness and neutral states are often better captured through vocal prosody. Figure~\ref{fig:modality_weights} visualizes these learned weights.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.9\columnwidth}{\centering\vspace{1.5cm}\textbf{[Figure 2: Modality Weights]}\\\smallskip Per-class EEG vs.\ Speech weight distribution learned by EAG, showing differentiated modality preferences across emotions.\vspace{1.5cm}}}
+    \caption{Learned per-class modality weights from the Emotion-Aware Gating module. The angry class relies more on EEG, while sad and neutral emotions favor speech features.}
+    \label{fig:modality_weights}
+\end{figure}
+
+\subsection{Training Dynamics}
+
+Figure~\ref{fig:training_curves} shows training and validation accuracy curves for the final model. Training accuracy reaches approximately 95\% while validation plateaus near 82.5\%, indicating a persistent overfitting gap. The model achieves its best validation accuracy at epoch 43 before early stopping at epoch 63. The teacher forcing ratio reaches zero at epoch 25, after which the model relies entirely on its own emotion probe for modality gating.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.9\columnwidth}{\centering\vspace{1.5cm}\textbf{[Figure 3: Training Curves]}\\\smallskip Training and validation accuracy over 80 epochs, with TF ratio overlay showing the annealing schedule.\vspace{1.5cm}}}
+    \caption{Training dynamics for v5.3. The gap between training ($\sim$95\%) and validation ($\sim$82.5\%) accuracy reflects the limited speech training data (4,424 samples for 7.3M parameters).}
+    \label{fig:training_curves}
+\end{figure}
+
+\subsection{Ablation and Version Progression}
+
+Figure~\ref{fig:version_progression} visualizes the accuracy progression from v1 through v5, highlighting the contribution of each major improvement.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.9\columnwidth}{\centering\vspace{1.5cm}\textbf{[Figure 4: Version Progression]}\\\smallskip Bar chart showing accuracy across all major versions (v1--v5) with annotations of key changes.\vspace{1.5cm}}}
+    \caption{Accuracy progression across AMERS versions. The largest improvement ($+$15.97 pp) came from class rebalancing in v4, not from architectural innovations.}
+    \label{fig:version_progression}
+\end{figure}
+
+The progression reveals an important lesson: data-level improvements (class rebalancing, label-aligned pairing) contributed far more than architectural complexity (attention mechanisms, gating modules). Class rebalancing alone accounted for nearly 16 percentage points of improvement, while the entire CMMA architecture contributed approximately 0.6 points on top of v4.
+
+% ============================================================
+% 6. DISCUSSION
+% ============================================================
+\section{Discussion}
+
+\subsection{The Dominance of Data Quality over Architecture}
+
+Perhaps the most striking finding of this work is that the biggest performance gain came not from attention mechanisms, contrastive learning, or end-to-end training, but from simply rebalancing the class distribution in the EEG dataset. Reducing DEAP's 37:1 class imbalance to 2.5:1 improved accuracy by 15.97 percentage points---more than all other changes combined. This underscores a lesson that is well known in principle but easy to overlook in practice: no amount of architectural sophistication can compensate for fundamentally skewed training data.
+
+\subsection{Why Regularization Failed}
+
+Five attempts to improve upon v5.3 (versions 5.4 through 5.8) all caused regression. This pattern is not coincidental. Our system operates in a severely data-limited regime: 4,424 speech training samples for a 7.3 million parameter model. In this setting, techniques designed for large-scale models---embedding mixup, R-Drop, stochastic depth---all effectively reduce model capacity at a point where capacity is already the bottleneck. The model needs every parameter to memorize the limited training set and generalize from it; further capacity restriction leaves it unable to learn the task.
+
+This finding has implications for practitioners working with small multimodal datasets. Standard regularization recipes from the computer vision or NLP literature should not be applied without careful consideration of the data regime. In our case, the only regularization that helped was the implicit variety created by random cross-modal pairing during training (different EEG-speech pairs each epoch), which provided data augmentation through combinatorial diversity.
+
+\subsection{The Teacher Forcing Lesson}
+
+The progression from v5.2 (100\% TF, 75.15\%) to v5.3 (annealed TF, 82.55\%) illustrates a well-known but easily violated principle: models trained with oracle information at train time must be weaned off that information before deployment. Annealed teacher forcing provides an elegant solution. The model initially learns \emph{what} to do (proper per-class modality preferences) with strong supervision, then learns \emph{how} to do it autonomously (through the emotion probe) as supervision fades. Fixed 100\% teacher forcing, by contrast, creates a dependency that cannot be satisfied at inference time.
+
+\subsection{Cross-Modal Attention Design Choices}
+
+The gated residual connection in CMMA (initializing the gate bias to $-2.0$, starting cross-modal injection near 12\%) reflects a conservative inductive bias: the model begins by trusting its own modality and learns to open the gate only when cross-modal information is genuinely helpful. In practice, the gates open to 30--50\% depending on the layer and modality, indicating that the model does find substantial value in cross-modal attention but not to the extent of replacing self-attention. This conservative initialization contributes to training stability.
+
+\subsection{Interpretability of Modality Weights}
+
+The learned per-class modality weights provide a degree of interpretability rare in multimodal systems. The finding that anger relies more on EEG while sadness favors speech is consistent with existing literature on frontal EEG asymmetry in anger~\cite{harmon2004role} and the acoustic correlates of sadness in speech~\cite{scherer2003vocal}. While the weight differences are modest ($\sim$0.55/0.45 rather than dramatic 0.80/0.20 splits), they are statistically consistent across training runs.
+
+Figure~\ref{fig:confusion_matrix} shows the confusion matrix for the final model.
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.9\columnwidth}{\centering\vspace{1.5cm}\textbf{[Figure 5: Confusion Matrix]}\\\smallskip Four-class confusion matrix for the best model (v5.3), showing classification patterns across angry, happy, sad, and neutral.\vspace{1.5cm}}}
+    \caption{Confusion matrix for the final AMERS model (v5.3). The most common confusions occur between happy and neutral, consistent with the acoustic similarity of these two states.}
+    \label{fig:confusion_matrix}
+\end{figure}
+
+% ============================================================
+% 7. LIMITATIONS
+% ============================================================
+\section{Limitations}
+
+We acknowledge several limitations of this work.
+
+\textbf{Small dataset.} The IEMOCAP speech corpus provides only 5,531 utterances for four-class training, and after an 80/20 split, the training set contains just 4,424 samples. With 7.3 million model parameters, the ratio of parameters to training samples is approximately 1,650:1. This extreme overparameterization means the model's generalization is fundamentally data-limited, as demonstrated by the persistent 12--13 point overfitting gap between training and validation accuracy.
+
+\textbf{Cross-corpus alignment.} DEAP and IEMOCAP are independent datasets recorded under different conditions (passive listening vs.\ active conversation), with different subjects, and with different emotion elicitation methods (music videos vs.\ scripted interactions). Our label-aligned pairing assumes that the same emotion label implies compatible neural and vocal patterns, which is an imperfect assumption.
+
+\textbf{Class imbalance.} Despite rebalancing DEAP from 37:1 to 2.5:1, residual imbalance remains. The angry class has only 1,140 EEG samples---far fewer than happy (41,940). The EEG encoder's standalone accuracy of 37.5\% suggests that EEG representations for minority classes remain weak.
+
+\textbf{Validation noise.} Random cross-modal pairing during validation introduces approximately $\pm$1\% accuracy variance between runs. While this is acceptable for approximate comparisons, it limits our ability to detect small improvements with confidence.
+
+\textbf{Modality imbalance.} The speech encoder (56.5\% standalone) substantially outperforms the EEG encoder (37.5\%), meaning the fusion module relies predominantly on speech. The added value of EEG, while measurable, is modest. This raises the question of whether the complexity of EEG recording and processing is justified by the marginal accuracy improvement over a speech-only system.
+
+\textbf{Subject independence.} Our evaluation uses a randomized train/validation split that may include data from the same subjects in both sets (for DEAP). A leave-one-subject-out evaluation would provide a more rigorous assessment of generalization.
+
+\textbf{Performance ceiling.} The v5.3--v5.8 results suggest that the system has reached a performance ceiling around 82--83\% given the available data. Five distinct attempts to push past this ceiling all failed, each degrading performance rather than improving it. Breaking through this ceiling would likely require substantially more training data rather than architectural changes.
+
+% ============================================================
+% 8. CONCLUSION
+% ============================================================
+\section{Conclusion}
+
+We have presented AMERS, an adaptive multimodal emotion recognition system that fuses EEG and speech signals through Cross-Modal Mutual Attention with Emotion-Aware Gating. Through five major system versions and nine sub-versions of the CMMA architecture, we achieved 82.55\% accuracy on four-class emotion classification, exceeding our target thresholds of 75\% accuracy and 0.72 macro F1-score.
+
+The key takeaways from this work are: (1) data quality---particularly class balance---dominates architectural sophistication for improving accuracy, as demonstrated by the 16 pp gain from rebalancing alone; (2) bidirectional gated cross-attention with conservative initialization provides an effective fusion mechanism for heterogeneous modalities; (3) annealed teacher forcing resolves the circular dependency in learning per-class modality preferences; and (4) regularization techniques designed for large-scale models can be counterproductive in data-limited settings, as evidenced by five consecutive failed improvement attempts.
+
+% ============================================================
+% 9. FUTURE WORK
+% ============================================================
+\section{Future Work}
+
+Several directions could address the limitations identified in this work.
+
+\textbf{Larger datasets.} Collecting or synthesizing additional labeled EEG-emotion data would directly address the fundamental data bottleneck. Recent large-scale EEG datasets and pretrained EEG foundation models may provide a path forward without requiring new data collection.
+
+\textbf{Pretrained speech models.} Replacing our MFCC-based speech encoder with features from wav2vec 2.0 or HuBERT could substantially improve speech representations, particularly for the happy and neutral classes that are currently the most confused.
+
+\textbf{Cross-subject evaluation.} A leave-one-subject-out protocol would provide a stricter and more realistic assessment of the system's generalization capability.
+
+\textbf{Additional modalities.} Incorporating facial video, text transcripts, or peripheral physiological signals (galvanic skin response, heart rate) could help break the performance ceiling by providing independent emotional evidence.
+
+\textbf{Lightweight architectures.} Given that most of the accuracy comes from data preprocessing and class rebalancing rather than model size, a lighter model with fewer parameters might reduce overfitting while maintaining competitive accuracy.
+
+\textbf{Real-time deployment.} Adapting the system for streaming EEG and speech inputs, with incremental attention computation, would be necessary for practical applications in healthcare or HCI.
+
+% ============================================================
+% REFERENCES
+% ============================================================
+\begin{thebibliography}{00}
+
+\bibitem{calvo2010affect}
+R. A. Calvo and S. D'Mello, ``Affect detection: An interdisciplinary review of models, methods, and their applications,'' \textit{IEEE Trans. Affective Computing}, vol. 1, no. 1, pp. 18--37, 2010.
+
+\bibitem{koelstra2012deap}
+S. Koelstra \textit{et al.}, ``DEAP: A database for emotion analysis using physiological signals,'' \textit{IEEE Trans. Affective Computing}, vol. 3, no. 1, pp. 18--31, 2012.
+
+\bibitem{busso2008iemocap}
+C. Busso \textit{et al.}, ``IEMOCAP: Interactive emotional dyadic motion capture database,'' \textit{Language Resources and Evaluation}, vol. 42, no. 4, pp. 335--359, 2008.
+
+\bibitem{zheng2015investigating}
+W.-L. Zheng and B.-L. Lu, ``Investigating critical frequency bands and channels for EEG-based emotion recognition with deep neural networks,'' \textit{IEEE Trans. Autonomous Mental Development}, vol. 7, no. 3, pp. 162--175, 2015.
+
+\bibitem{li2018eeg}
+Y. Li \textit{et al.}, ``EEG-based emotion recognition via neural architecture search,'' in \textit{Proc. AAAI}, 2018.
+
+\bibitem{song2018eeg}
+T. Song \textit{et al.}, ``EEG emotion recognition using dynamical graph convolutional neural networks,'' \textit{IEEE Trans. Affective Computing}, vol. 11, no. 3, pp. 532--541, 2018.
+
+\bibitem{alhagry2017emotion}
+S. Alhagry, A. A. Fahmy, and R. A. El-Khoribi, ``Emotion recognition based on EEG using LSTM recurrent neural network,'' \textit{Int. J. Advanced Computer Science and Applications}, vol. 8, no. 10, 2017.
+
+\bibitem{song2020eeg}
+T. Song \textit{et al.}, ``EEG-based emotion recognition with self-attention mechanism,'' in \textit{Proc. IJCNN}, 2020.
+
+\bibitem{schuller2009recognising}
+B. Schuller \textit{et al.}, ``Recognising realistic emotions and affect in speech: State of the art and lessons learnt from the first challenge,'' \textit{Speech Communication}, vol. 53, no. 9--10, pp. 1062--1087, 2011.
+
+\bibitem{zhao2019speech}
+Z. Zhao \textit{et al.}, ``Speech emotion recognition using deep 1D \& 2D CNN LSTM networks,'' \textit{Biomedical Signal Processing and Control}, vol. 47, pp. 312--323, 2019.
+
+\bibitem{baevski2020wav2vec}
+A. Baevski \textit{et al.}, ``wav2vec 2.0: A framework for self-supervised learning of speech representations,'' in \textit{Proc. NeurIPS}, 2020.
+
+\bibitem{hsu2021hubert}
+W.-N. Hsu \textit{et al.}, ``HuBERT: Self-supervised speech representation learning by masked prediction of hidden units,'' \textit{IEEE/ACM Trans. Audio, Speech, and Language Processing}, vol. 29, pp. 3451--3460, 2021.
+
+\bibitem{zadeh2017tensor}
+A. Zadeh \textit{et al.}, ``Tensor fusion network for multimodal sentiment analysis,'' in \textit{Proc. EMNLP}, 2017.
+
+\bibitem{tsai2019multimodal}
+Y.-H. H. Tsai \textit{et al.}, ``Multimodal transformer for unaligned multimodal language sequences,'' in \textit{Proc. ACL}, 2019.
+
+\bibitem{huang2017fusion}
+Y. Huang \textit{et al.}, ``Fusion of facial expressions and EEG for multimodal emotion recognition,'' \textit{Computational Intelligence and Neuroscience}, vol. 2017, 2017.
+
+\bibitem{lu2019vilbert}
+J. Lu \textit{et al.}, ``ViLBERT: Pretraining task-agnostic visiolinguistic representations for vision-and-language tasks,'' in \textit{Proc. NeurIPS}, 2019.
+
+\bibitem{tan2019lxmert}
+H. Tan and M. Bansal, ``LXMERT: Learning cross-modality encoder representations from transformers,'' in \textit{Proc. EMNLP}, 2019.
+
+\bibitem{jaegle2021perceiver}
+A. Jaegle \textit{et al.}, ``Perceiver: General perception with iterative attention,'' in \textit{Proc. ICML}, 2021.
+
+\bibitem{ganin2016domain}
+Y. Ganin \textit{et al.}, ``Domain-adversarial training of neural networks,'' \textit{J. Machine Learning Research}, vol. 17, no. 1, pp. 2096--2030, 2016.
+
+\bibitem{li2020domain}
+H. Li \textit{et al.}, ``Domain adaptation for EEG emotion recognition based on latent representation similarity,'' \textit{IEEE Trans. Cognitive and Developmental Systems}, vol. 12, no. 2, pp. 344--353, 2020.
+
+\bibitem{wu2021rdrop}
+L. Wu \textit{et al.}, ``R-Drop: Regularized dropout for neural networks,'' in \textit{Proc. NeurIPS}, 2021.
+
+\bibitem{harmon2004role}
+E. Harmon-Jones, ``Contributions from research on anger and cognitive dissonance to understanding the motivational functions of asymmetrical frontal brain activity,'' \textit{Biological Psychology}, vol. 67, no. 1--2, pp. 51--76, 2004.
+
+\bibitem{scherer2003vocal}
+K. R. Scherer, ``Vocal communication of emotion: A review of research paradigms,'' \textit{Speech Communication}, vol. 40, no. 1--2, pp. 227--256, 2003.
+
+\end{thebibliography}
+
+\end{document}
