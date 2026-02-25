@@ -112,6 +112,14 @@ class E2ELabelAlignedDataset(Dataset):
         eeg_pool = self.eeg_by_class[c]
         sp_pool = self.sp_by_class[c]
 
+        # Handle empty pools (LOSO: val subject may lack some classes)
+        if len(eeg_pool) == 0 or len(sp_pool) == 0:
+            valid = [i for i in range(self.num_classes)
+                     if len(self.eeg_by_class[i]) > 0 and len(self.sp_by_class[i]) > 0]
+            c = valid[idx % len(valid)]
+            eeg_pool = self.eeg_by_class[c]
+            sp_pool = self.sp_by_class[c]
+
         eeg_idx = torch.randint(len(eeg_pool), (1,)).item()
         sp_idx = torch.randint(len(sp_pool), (1,)).item()
 
@@ -143,6 +151,11 @@ class FixedPairValDataset(Dataset):
         for c in range(num_classes):
             eeg_pool = eeg_features[eeg_labels == c]
             sp_pool = speech_features[speech_labels == c]
+
+            # Skip classes with no samples (LOSO: val subject may lack a class)
+            if len(eeg_pool) == 0 or len(sp_pool) == 0:
+                continue
+
             eeg_idxs = rng.randint(0, len(eeg_pool), size=per_class)
             sp_idxs = rng.randint(0, len(sp_pool), size=per_class)
             eeg_list.append(torch.as_tensor(eeg_pool[eeg_idxs], dtype=torch.float32))
