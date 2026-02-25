@@ -191,95 +191,104 @@ AMERS processes raw EEG features and speech MFCCs through separate encoder netwo
 \begin{figure*}[t]
 \centering
 \begin{tikzpicture}[
-    node distance=0.6cm and 0.8cm,
-    >={Stealth[length=5pt]},
-    box/.style={draw, rounded corners=3pt, minimum height=0.85cm,
-                minimum width=2.0cm, align=center, font=\scriptsize\bfseries},
-    io/.style={box, fill=tablegray, draw=darkgray},
-    enc/.style={box, minimum width=2.4cm},
-    fus/.style={box, fill=cmmacolor!20, draw=cmmacolor!80, minimum width=3.8cm},
-    gat/.style={box, fill=eagcolor!20, draw=eagcolor!80, minimum width=3.8cm},
-    cls/.style={box, fill=hlgreen!15, draw=hlgreen!80, minimum width=2.4cm},
-    arr/.style={->, thick, color=darkgray},
-    darr/.style={->, thick, dashed, color=accentblue},
-    lbl/.style={font=\tiny\itshape, color=darkgray},
+    node distance=0.55cm and 1.0cm,
+    >={Stealth[length=5pt, width=3.5pt]},
+    box/.style={draw, rounded corners=4pt, minimum height=0.9cm,
+                minimum width=2.3cm, align=center, font=\small\bfseries,
+                inner sep=4pt, line width=0.6pt},
+    io/.style={box, fill=tablegray, draw=darkgray!80},
+    enc/.style={box, minimum width=2.8cm},
+    fus/.style={box, fill=cmmacolor!15, draw=cmmacolor!70, minimum width=8.5cm,
+               minimum height=0.85cm},
+    gat/.style={box, fill=eagcolor!15, draw=eagcolor!70, minimum width=5.5cm},
+    cls/.style={box, fill=hlgreen!12, draw=hlgreen!70, minimum width=3.2cm},
+    arr/.style={->, line width=0.7pt, color=darkgray!85},
+    darr/.style={->, line width=0.7pt, dashed, color=accentblue!80},
+    lbl/.style={font=\scriptsize\itshape, color=darkgray!80},
 ]
+\def\sublbl{\scriptsize\color{darkgray}}
 
 % --- Inputs ---
-\node[io] (eeg_in) {EEG Input\\{\tiny 160-dim DE features}};
-\node[io, right=3.8cm of eeg_in] (sp_in) {Speech Input\\{\tiny 80 MFCCs $\times$ 120 frames}};
+\node[io, minimum width=2.8cm] (eeg_in) {EEG Input\\[-1pt]{\sublbl 160-dim DE features}};
+\node[io, minimum width=2.8cm, right=4.2cm of eeg_in] (sp_in) {Speech Input\\[-1pt]{\sublbl 80 MFCCs $\times$ 120 frames}};
 
 % --- Encoders ---
-\node[enc, below=0.5cm of eeg_in, fill=eegcolor!15, draw=eegcolor!70]
-      (eeg_enc) {EEG Encoder\\{\tiny 3-layer Attention, CLS}};
-\node[enc, below=0.5cm of sp_in, fill=speechcolor!15, draw=speechcolor!70]
-      (sp_enc) {Speech Encoder\\{\tiny CNN-BiLSTM-Attn}};
+\node[enc, below=0.5cm of eeg_in, fill=eegcolor!12, draw=eegcolor!65]
+      (eeg_enc) {EEG Encoder\\[-1pt]{\sublbl 3-layer Attention + CLS}};
+\node[enc, below=0.5cm of sp_in, fill=speechcolor!12, draw=speechcolor!65]
+      (sp_enc) {Speech Encoder\\[-1pt]{\sublbl CNN-BiLSTM-Attn}};
 
 % --- Contrastive + DANN label ---
-\node[lbl, left=0.1cm of eeg_enc] (cl1) {Contrastive};
-\node[lbl, below=-0.05cm of cl1] {+ DANN};
-\node[lbl, right=0.1cm of sp_enc] (cl2) {Contrastive};
-\node[lbl, below=-0.05cm of cl2] {+ DANN};
+\node[lbl, left=0.15cm of eeg_enc, align=right] (cl1) {Contrastive\\[-1pt]+ DANN};
+\node[lbl, right=0.15cm of sp_enc, align=left] (cl2) {Contrastive\\[-1pt]+ DANN};
 
 % --- Tokenizer ---
-\node[box, below=0.5cm of eeg_enc, fill=lightblue!40, draw=accentblue!60,
-      minimum width=2.4cm] (tok_e) {Tokenize\\{\tiny 128-d $\to$ 8$\times$16 + CLS}};
-\node[box, below=0.5cm of sp_enc, fill=lightblue!40, draw=accentblue!60,
-      minimum width=2.4cm] (tok_s) {Tokenize\\{\tiny 128-d $\to$ 8$\times$16 + CLS}};
+\node[box, below=0.5cm of eeg_enc, fill=lightblue!30, draw=accentblue!55,
+      minimum width=2.8cm, font=\small\bfseries] (tok_e) {Tokenize\\[-1pt]{\sublbl 128-d $\to$ 8$\times$16 + CLS}};
+\node[box, below=0.5cm of sp_enc, fill=lightblue!30, draw=accentblue!55,
+      minimum width=2.8cm, font=\small\bfseries] (tok_s) {Tokenize\\[-1pt]{\sublbl 128-d $\to$ 8$\times$16 + CLS}};
 
 % --- CMMA Layers (stacked) ---
-\coordinate (mid) at ($(tok_e.south)!0.5!(tok_s.south) + (0,-0.8)$);
-\node[fus] at (mid) (cmma1) {CMMA Layer 1 \;\; {\tiny Self-Attn $\to$ Cross-Attn $\to$ Gated Res $\to$ FFN}};
-\node[fus, below=0.25cm of cmma1] (cmma2) {CMMA Layer 2 \;\; {\tiny Bidirectional $\times$ 2 streams}};
-\node[fus, below=0.25cm of cmma2] (cmma3) {CMMA Layer 3 \;\; {\tiny Gated residual bias = $-2.0$}};
+\coordinate (mid) at ($(tok_e.south)!0.5!(tok_s.south) + (0,-0.85)$);
+\node[fus] at (mid) (cmma1)
+    {CMMA Layer 1\hspace{8pt}{\sublbl Self-Attn $\to$ Cross-Attn $\to$ Gated Res $\to$ FFN}};
+\node[fus, below=0.2cm of cmma1] (cmma2)
+    {CMMA Layer 2\hspace{8pt}{\sublbl Bidirectional $\times$ 2 streams}};
+\node[fus, below=0.2cm of cmma2] (cmma3)
+    {CMMA Layer 3\hspace{8pt}{\sublbl Gated residual bias $= -2.0$}};
 
 % --- Brace for CMMA ---
-\draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick, headerblue]
-    ([xshift=-3pt]cmma1.north west) -- ([xshift=-3pt]cmma3.south west)
-    node[midway, left=6pt, font=\tiny\bfseries, color=headerblue, align=right]
+\draw[decorate, decoration={brace, amplitude=6pt, mirror}, line width=0.7pt, headerblue]
+    ([xshift=-5pt]cmma1.north west) -- ([xshift=-5pt]cmma3.south west)
+    node[midway, left=8pt, font=\scriptsize\bfseries, color=headerblue, align=right]
     {$N{=}3$\\CMMA\\Layers};
 
+% --- Bidirectional annotation above CMMA ---
+\draw[<->, line width=0.8pt, cmmacolor]
+    ([xshift=-0.6cm, yshift=3pt]cmma1.north) --
+    ([xshift=0.6cm, yshift=3pt]cmma1.north)
+    node[midway, above=1pt, font=\scriptsize\bfseries, color=cmmacolor]
+    {EEG $\leftrightarrow$ Speech};
+
 % --- CLS Pool ---
-\node[box, below=0.5cm of cmma3, fill=tablegray, draw=darkgray,
-      minimum width=3.8cm] (pool) {CLS Token Pooling\\{\tiny $\mathbf{e}_{\text{eeg}}$, $\mathbf{e}_{\text{sp}}$ $\in \mathbb{R}^{128}$}};
+\node[box, below=0.5cm of cmma3, fill=tablegray, draw=darkgray!70,
+      minimum width=5.5cm, font=\small\bfseries] (pool)
+    {CLS Token Pooling\\[-1pt]{\sublbl $\mathbf{e}_{\text{eeg}},\,\mathbf{e}_{\text{sp}} \in \mathbb{R}^{128}$}};
 
 % --- EAG ---
-\node[gat, below=0.5cm of pool] (eag) {Emotion-Aware Gating (EAG)\\{\tiny Per-class $\alpha_c$, annealed TF, diversity loss}};
+\node[gat, below=0.5cm of pool] (eag)
+    {Emotion-Aware Gating (EAG)\\[-1pt]{\sublbl Per-class $\alpha_c$, annealed TF, diversity loss}};
 
 % --- Classifier ---
-\node[cls, below=0.5cm of eag] (clf) {MLP Classifier\\{\tiny 128 $\to$ 256 $\to$ 128 $\to$ 4}};
+\node[cls, below=0.5cm of eag] (clf)
+    {MLP Classifier\\[-1pt]{\sublbl 128 $\to$ 256 $\to$ 128 $\to$ 4}};
 
 % --- Output ---
-\node[box, below=0.5cm of clf, fill=goldaccent!15, draw=goldaccent!80,
-      minimum width=2.4cm] (out) {Emotion Prediction\\{\tiny Angry | Happy | Sad | Neutral}};
+\node[box, below=0.5cm of clf, fill=goldaccent!12, draw=goldaccent!70,
+      minimum width=3.6cm, font=\small\bfseries] (out)
+    {Emotion Prediction\\[-1pt]{\sublbl Angry ~|~ Happy ~|~ Sad ~|~ Neutral}};
 
 % --- Auxiliary Heads (side) ---
-\node[box, left=0.8cm of eag, fill=tablegray, draw=tableborder,
-      minimum width=1.5cm, font=\tiny\bfseries] (aux_e) {Aux EEG\\Head};
-\node[box, right=0.8cm of eag, fill=tablegray, draw=tableborder,
-      minimum width=1.5cm, font=\tiny\bfseries] (aux_s) {Aux Speech\\Head};
+\node[box, left=1.0cm of eag, fill=tablegray, draw=tableborder,
+      minimum width=1.6cm, minimum height=0.75cm, font=\scriptsize\bfseries] (aux_e) {Aux EEG\\Head};
+\node[box, right=1.0cm of eag, fill=tablegray, draw=tableborder,
+      minimum width=1.6cm, minimum height=0.75cm, font=\scriptsize\bfseries] (aux_s) {Aux Speech\\Head};
 
 % ---- Arrows ----
 \draw[arr] (eeg_in) -- (eeg_enc);
 \draw[arr] (sp_in)  -- (sp_enc);
 \draw[arr] (eeg_enc) -- (tok_e);
 \draw[arr] (sp_enc)  -- (tok_s);
-\draw[arr] (tok_e.south) -- ++(0,-0.3) -| ([xshift=-0.6cm]cmma1.north);
-\draw[arr] (tok_s.south) -- ++(0,-0.3) -| ([xshift=0.6cm]cmma1.north);
+\draw[arr] (tok_e.south) -- ++(0,-0.32) -| ([xshift=-1.2cm]cmma1.north);
+\draw[arr] (tok_s.south) -- ++(0,-0.32) -| ([xshift=1.2cm]cmma1.north);
 \draw[arr] (cmma1) -- (cmma2);
 \draw[arr] (cmma2) -- (cmma3);
 \draw[arr] (cmma3) -- (pool);
 \draw[arr] (pool) -- (eag);
 \draw[arr] (eag) -- (clf);
 \draw[arr] (clf) -- (out);
-\draw[darr] (pool.west) -| (aux_e.north);
-\draw[darr] (pool.east) -| (aux_s.north);
-
-% --- Bidirectional arrows inside CMMA ---
-\draw[<->, thick, cmmacolor, dashed]
-    ([xshift=-0.5cm, yshift=-0.15cm]cmma1.north) --
-    ([xshift=0.5cm, yshift=-0.15cm]cmma1.north)
-    node[midway, above, font=\tiny, color=cmmacolor] {EEG $\leftrightarrow$ Speech};
+\draw[darr] (pool.west) -- ++(-0.4,0) |- (aux_e.east);
+\draw[darr] (pool.east) -- ++(0.4,0) |- (aux_s.west);
 
 \end{tikzpicture}
 \caption{Overall architecture of AMERS. EEG and speech features are encoded independently, tokenized into sequences with CLS tokens, then fused through three bidirectional CMMA layers. The Emotion-Aware Gating module dynamically weights modality contributions per emotion class before the final MLP classifier. Auxiliary unimodal heads provide additional supervision (dashed arrows). Total parameters: 7.3M.}
@@ -290,16 +299,23 @@ AMERS processes raw EEG features and speech MFCCs through separate encoder netwo
 
 \subsubsection{DEAP (EEG)} The DEAP dataset contains 32-channel EEG recordings from 32 subjects, each watching 40 one-minute music video clips with valence-arousal annotations (1--9). We extract differential entropy features across four frequency bands ($\theta$: 4--8\,Hz, $\alpha$: 8--14\,Hz, $\beta$: 14--31\,Hz, $\gamma$: 31--50\,Hz) for each channel, plus 28 asymmetry features, yielding \textbf{160-dimensional} vectors per sample. After discretization into four emotions, the dataset contains 76,800 samples with severe imbalance:
 
+\vspace{2pt}
 \begin{center}
+\renewcommand{\arraystretch}{1.15}
 \small
-\begin{tabular}{@{}lcr@{}}
-\rowcolor{lightblue!50} \textbf{Class} & \textbf{Quadrant} & \textbf{Samples} \\
+\begin{tabular}{@{\hspace{6pt}}l@{\hspace{16pt}}c@{\hspace{16pt}}r@{\hspace{6pt}}}
+\toprule
+\rowcolor{headerblue!10}
+\textcolor{headerblue}{\textbf{Class}} & \textcolor{headerblue}{\textbf{Quadrant}} & \textcolor{headerblue}{\textbf{Samples}} \\
+\midrule
 Angry   & Low V, High A & 1,140 \\
 \rowcolor{tablegray} Happy   & High V, High A & 41,940 \\
 Sad     & Low V, Low A & 16,680 \\
 \rowcolor{tablegray} Neutral & High V, Low A & 17,040 \\
+\bottomrule
 \end{tabular}
 \end{center}
+\vspace{-2pt}
 
 \subsubsection{IEMOCAP (Speech)} We retain utterances labeled as angry (1,636), happy (1,084), sad (1,103), or neutral (1,708), totaling \textbf{5,531} utterances. For each, we extract 80-dimensional MFCC features over 120 time frames.
 
@@ -388,14 +404,21 @@ Total loss:
 
 We evaluate on four-class emotion classification (angry, happy, sad, neutral). Both datasets are split 80/20 with stratified sampling:
 
+\vspace{2pt}
 \begin{center}
+\renewcommand{\arraystretch}{1.15}
 \small
-\begin{tabular}{@{}lrr@{}}
-\rowcolor{lightblue!50} \textbf{Modality} & \textbf{Train} & \textbf{Val} \\
+\begin{tabular}{@{\hspace{6pt}}l@{\hspace{18pt}}r@{\hspace{18pt}}r@{\hspace{6pt}}}
+\toprule
+\rowcolor{headerblue!10}
+\textcolor{headerblue}{\textbf{Modality}} & \textcolor{headerblue}{\textbf{Train}} & \textcolor{headerblue}{\textbf{Val}} \\
+\midrule
 EEG (DEAP)       & 61,440 & 15,360 \\
 \rowcolor{tablegray} Speech (IEMOCAP) & 4,424  & 1,107 \\
+\bottomrule
 \end{tabular}
 \end{center}
+\vspace{-2pt}
 
 All experiments run on an NVIDIA L4 GPU (22\,GB) with PyTorch AMP. Training takes $\sim$15 minutes.
 
@@ -406,25 +429,26 @@ AMERS was developed through five major versions. Table~\ref{tab:versions} summar
 % ---- TABLE 1: VERSION COMPARISON ----
 \begin{table*}[t]
 \centering
-\caption{Performance progression across AMERS system versions. Each version addresses specific limitations identified in the previous iteration. The single largest improvement came from class rebalancing in v4 ($+$15.97 pp).}
+\caption{Performance progression across AMERS system versions. Each version addresses specific limitations identified in the previous iteration. The single largest improvement came from class rebalancing in v4 ($+$15.97\,pp).}
 \label{tab:versions}
-\renewcommand{\arraystretch}{1.15}
-\begin{tabular}{@{}>{\bfseries}l l c c l@{}}
+\renewcommand{\arraystretch}{1.25}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{\hspace{4pt}} l @{\hspace{10pt}} p{5.8cm} @{\hspace{8pt}} c @{\hspace{8pt}} c @{\hspace{10pt}} p{4.8cm} @{\hspace{4pt}}}
 \toprule
-\rowcolor{headerblue!12}
+\rowcolor{headerblue!10}
 \textcolor{headerblue}{\textbf{Version}} &
 \textcolor{headerblue}{\textbf{Key Changes}} &
 \textcolor{headerblue}{\textbf{Accuracy}} &
 \textcolor{headerblue}{\textbf{Macro F1}} &
 \textcolor{headerblue}{\textbf{Primary Limitation}} \\
 \midrule
-v1 & Concat fusion, vanilla GAN, PPO control & --- & --- & Index-based pairing, no class balancing \\
+\textbf{v1} & Concat fusion, vanilla GAN, PPO control & --- & --- & Index-based pairing, no class balancing \\
 \rowcolor{tablegray}
-v2 & Label-aligned pairing, gated fusion, focal loss & 55.92\% & 0.5501 & 37$\times$ class imbalance untouched \\
-v3 & +Contrastive pretrain, DANN, transformer fusion & 65.97\% & $\sim$0.60 & Frozen encoders during fusion \\
+\textbf{v2} & Label-aligned pairing, gated fusion, focal loss & 55.92\% & 0.5501 & 37$\times$ class imbalance untouched \\
+\textbf{v3} & +Contrastive pretrain, DANN, transformer fusion & 65.97\% & {$\sim$0.60} & Frozen encoders during fusion \\
 \rowcolor{tablegray}
-v4 & \textcolor{hlgreen}{Class rebalancing} (37$\times$$\to$2.5$\times$), CLS encoder & 81.94\% & 0.8193 & No end-to-end training \\
-v5.3 & CMMA + EAG + end-to-end joint training & \bestresult{82.55\%} & $\sim$\bestresult{0.83} & Data-limited ceiling \\
+\textbf{v4} & \textcolor{hlgreen}{Class rebalancing} (37$\times$ $\to$ 2.5$\times$), CLS encoder & 81.94\% & 0.8193 & No end-to-end training \\
+\textbf{v5.3} & CMMA + EAG + end-to-end joint training & \bestresult{82.55\%} & {$\sim$}\bestresult{0.83} & Data-limited ceiling \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -446,28 +470,29 @@ v5.3 & CMMA + EAG + end-to-end joint training & \bestresult{82.55\%} & $\sim$\be
 \centering
 \caption{v5 sub-version results. Versions 5.4--5.8 attempted to surpass v5.3 (82.55\%) but each caused regression, illustrating the difficulty of regularization in data-limited multimodal settings.}
 \label{tab:v5_versions}
-\renewcommand{\arraystretch}{1.15}
-\begin{tabular}{@{}>{\bfseries}l l c l@{}}
+\renewcommand{\arraystretch}{1.25}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{\hspace{4pt}} l @{\hspace{8pt}} p{7.2cm} @{\hspace{8pt}} c @{\hspace{10pt}} p{5.5cm} @{\hspace{4pt}}}
 \toprule
-\rowcolor{headerblue!12}
+\rowcolor{headerblue!10}
 \textcolor{headerblue}{\textbf{Version}} &
 \textcolor{headerblue}{\textbf{Changes Over Previous}} &
 \textcolor{headerblue}{\textbf{Val Acc.}} &
 \textcolor{headerblue}{\textbf{Failure Mode}} \\
 \midrule
-v5.0 & Initial CMMA + EAG implementation & 80.90\% & Gates stuck at 0.50/0.50 (dead gating) \\
+\textbf{v5.0} & Initial CMMA + EAG implementation & 80.90\% & Gates stuck at 0.50/0.50 (dead gating) \\
 \rowcolor{tablegray}
-v5.1 & Conservative encoder LR (0.05$\times$), EAG LR 3$\times$, frozen warmup & 82.05\% & EAG undifferentiated without supervision \\
-v5.2 & +Teacher forcing (100\%), +gate diversity loss & \failresult{75.15\%} & Exposure bias: train 99\% / val 75\% \\
+\textbf{v5.1} & Conservative encoder LR (0.05$\times$), EAG LR 3$\times$, frozen warmup & 82.05\% & EAG undifferentiated without supervision \\
+\textbf{v5.2} & +Teacher forcing (100\%), +gate diversity loss & \failresult{75.15\%} & Exposure bias: train 99\% / val 75\% \\
+\rowcolor{hlgreen!8}
+\textbf{\textcolor{hlgreen}{v5.3}} & \textcolor{hlgreen}{Annealed TF (1.0 $\to$ 0.0 over 25 epochs)} & \bestresult{82.55\%} & \textcolor{hlgreen}{\textbf{Best result} (data-limited ceiling)} \\
+\textbf{v5.4} & +Embedding mixup ($\alpha$=0.3), +model EMA & \failresult{80.15\%} & Mixup destroyed DANN manifold \\
 \rowcolor{tablegray}
-\textcolor{hlgreen}{v5.3} & \textcolor{hlgreen}{Annealed TF (1.0$\to$0.0 / 25 ep.)} & \bestresult{82.55\%} & \textcolor{hlgreen}{Best result (data-limited ceiling)} \\
-v5.4 & +Embedding mixup ($\alpha$=0.3), +model EMA & \failresult{80.15\%} & Mixup destroyed DANN manifold \\
+\textbf{v5.5} & +Confidence penalty (entropy reg.) & \failresult{71.90\%} & Sign error: minimized instead of maximized entropy \\
+\textbf{v5.6} & Remove penalty, +determ.\ val, +stronger reg. & \failresult{69.00\%} & Over-regularized; catastrophic forgetting \\
 \rowcolor{tablegray}
-v5.5 & +Confidence penalty (entropy reg.) & \failresult{71.90\%} & Sign error: minimized entropy \\
-v5.6 & Remove penalty, +determ.\ val, +stronger reg. & \failresult{69.00\%} & Over-regularized; catastrophic forgetting \\
-\rowcolor{tablegray}
-v5.7 & Clean revert to v5.3 settings & --- & Not tested (skipped to v5.8) \\
-v5.8 & +R-Drop, +DropPath, +input augmentation & \failresult{73.50\%} & Too aggressive for small-data regime \\
+\textbf{v5.7} & Clean revert to v5.3 settings & --- & Not tested (skipped to v5.8) \\
+\textbf{v5.8} & +R-Drop, +DropPath, +input augmentation & \failresult{73.50\%} & Too aggressive for small-data regime \\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -494,13 +519,14 @@ The final model (v5.3) achieves \textbf{82.55\%} accuracy, $\sim$\textbf{0.83} m
 \centering
 \caption{Per-class F1 scores. Class rebalancing (v4) dramatically improved the angry class, previously nearly unrecognizable at 0.38.}
 \label{tab:results}
-\renewcommand{\arraystretch}{1.2}
-\begin{tabular}{@{}l c c >{\bfseries\color{hlgreen}}c @{}}
+\renewcommand{\arraystretch}{1.3}
+\setlength{\tabcolsep}{0pt}
+\begin{tabular}{@{\hspace{6pt}} l @{\hspace{18pt}} c @{\hspace{18pt}} c @{\hspace{14pt}} >{\bfseries\color{hlgreen}}c @{\hspace{6pt}}}
 \toprule
-\rowcolor{headerblue!12}
+\rowcolor{headerblue!10}
 \textcolor{headerblue}{\textbf{Emotion}} &
-\textcolor{headerblue}{\textbf{v2}} &
-\textcolor{headerblue}{\textbf{v4}} &
+\textcolor{headerblue}{\textbf{v2 (F1)}} &
+\textcolor{headerblue}{\textbf{v4 (F1)}} &
 \textcolor{headerblue}{\textbf{$\Delta$}} \\
 \midrule
 Angry   & 0.38 & 0.80 & +0.42 \\
@@ -510,8 +536,8 @@ Sad     & 0.66 & 0.88 & +0.22 \\
 \rowcolor{tablegray}
 Neutral & 0.58 & 0.82 & +0.24 \\
 \midrule
-\rowcolor{lightblue!40}
-\textbf{Macro avg.} & 0.55 & \textbf{0.82} & +0.27 \\
+\rowcolor{headerblue!8}
+\textbf{Macro avg.} & \textbf{0.55} & \textbf{0.82} & +0.27 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -523,42 +549,50 @@ Neutral & 0.58 & 0.82 & +0.24 \\
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-    ybar,
-    bar width=10pt,
-    width=\columnwidth,
-    height=4.8cm,
+    ybar=3pt,
+    bar width=12pt,
+    width=0.98\columnwidth,
+    height=5.2cm,
     ylabel={Modality Weight ($\alpha$)},
-    ylabel style={font=\small},
+    ylabel style={font=\footnotesize, at={(0.04,0.5)}},
+    xlabel style={font=\footnotesize},
     symbolic x coords={Angry, Happy, Sad, Neutral},
     xtick=data,
-    xticklabel style={font=\small},
-    yticklabel style={font=\small},
+    xticklabel style={font=\footnotesize, yshift=-1pt},
+    yticklabel style={font=\scriptsize},
     ymin=0, ymax=0.72,
     ytick={0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
     legend style={
-        at={(0.5, 1.02)}, anchor=south,
+        at={(0.5, 1.05)}, anchor=south,
         legend columns=2,
-        font=\small,
+        font=\footnotesize,
         draw=tableborder,
         fill=white,
+        /tikz/every even column/.append style={column sep=8pt},
+        inner sep=3pt,
     },
     area legend,
     nodes near coords,
-    nodes near coords style={font=\tiny, /pgf/number format/fixed,
+    nodes near coords style={font=\scriptsize\bfseries,
+                             /pgf/number format/fixed,
                              /pgf/number format/precision=2},
     every node near coord/.append style={yshift=2pt},
     grid=major,
-    grid style={dashed, gray!30},
-    major grid style={line width=0.3pt},
+    grid style={dashed, gray!25},
+    major grid style={line width=0.25pt},
+    enlarge x limits=0.18,
+    clip=false,
 ]
-\addplot[fill=eegcolor!70, draw=eegcolor] coordinates
+\addplot[fill=eegcolor!65, draw=eegcolor!90, line width=0.5pt] coordinates
     {(Angry,0.57) (Happy,0.50) (Sad,0.43) (Neutral,0.44)};
-\addplot[fill=speechcolor!70, draw=speechcolor] coordinates
+\addplot[fill=speechcolor!65, draw=speechcolor!90, line width=0.5pt] coordinates
     {(Angry,0.43) (Happy,0.50) (Sad,0.57) (Neutral,0.56)};
 \legend{EEG Weight, Speech Weight}
+% Reference line at 0.50
+\draw[dashed, gray!50, line width=0.4pt] (axis cs:Angry,0.5) -- (axis cs:Neutral,0.5);
 \end{axis}
 \end{tikzpicture}
-\caption{Learned per-class modality weights from EAG. Anger relies more on EEG (frontal asymmetry), while sadness and neutral states favor speech prosody. Happy shows balanced weighting.}
+\caption{Learned per-class modality weights from EAG. Anger relies more on EEG (frontal asymmetry), while sadness and neutral states favor speech prosody. Happy shows balanced weighting. Dashed line marks equal weighting.}
 \label{fig:modality_weights}
 \end{figure}
 
@@ -575,86 +609,113 @@ Figure~\ref{fig:modality_weights} shows the per-class EEG--speech weights. The d
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-    width=\columnwidth,
-    height=5.2cm,
+    width=0.98\columnwidth,
+    height=5.5cm,
     xlabel={Epoch},
-    xlabel style={font=\small},
+    xlabel style={font=\footnotesize},
     ylabel={Accuracy (\%)},
-    ylabel style={font=\small, color=headerblue},
-    xmin=0, xmax=80,
+    ylabel style={font=\footnotesize, color=headerblue, at={(0.05,0.5)}},
+    xmin=0, xmax=82,
     ymin=20, ymax=100,
     xtick={0,10,20,30,40,50,60,70,80},
-    xticklabel style={font=\tiny},
-    yticklabel style={font=\tiny, color=headerblue},
+    xticklabel style={font=\scriptsize},
+    yticklabel style={font=\scriptsize, color=headerblue},
     axis y line*=left,
     axis x line*=bottom,
     grid=major,
-    grid style={dashed, gray!20},
+    grid style={dashed, gray!18},
     legend style={
-        at={(0.98,0.35)}, anchor=east,
-        font=\tiny,
+        at={(0.03,0.97)}, anchor=north west,
+        font=\scriptsize,
         draw=tableborder,
         fill=white,
-        fill opacity=0.9,
+        fill opacity=0.92,
+        inner sep=3pt,
+        row sep=1pt,
     },
     clip=false,
 ]
+% Overfitting gap shading
+\addplot[headerblue!8, forget plot, draw=none, fill opacity=0.5]
+    coordinates {
+        (0,28) (3,45) (5,55) (8,64) (10,68) (13,73) (15,76)
+        (18,80) (20,82) (23,85) (25,86) (28,88) (30,89)
+        (33,90.5) (35,91) (38,92) (40,93) (43,93.5) (45,94)
+        (50,94.2) (55,94.8) (60,95) (65,95.3) (70,95.5) (75,95.8) (80,96)
+        (80,80.5) (75,80.8) (70,81.0) (65,81.2) (60,81.5) (55,81.8)
+        (50,82.0) (45,82.2) (43,82.55) (40,82.3) (38,82.2) (35,82)
+        (33,81.8) (30,81.5) (28,81) (25,80.5) (23,80) (20,78)
+        (18,76) (15,73) (13,70) (10,65) (8,60) (5,52) (3,42) (0,26)
+    } \closedcycle;
+
 % Training accuracy
-\addplot[thick, color=headerblue, mark=*, mark size=1.2pt, mark options={fill=headerblue}]
+\addplot[line width=1pt, color=headerblue, mark=*, mark size=1pt,
+         mark options={fill=headerblue, solid}, mark repeat=3]
     coordinates {
         (0,28) (3,45) (5,55) (8,64) (10,68) (13,73) (15,76)
         (18,80) (20,82) (23,85) (25,86) (28,88) (30,89)
         (33,90.5) (35,91) (38,92) (40,93) (43,93.5) (45,94)
         (50,94.2) (55,94.8) (60,95) (65,95.3) (70,95.5) (75,95.8) (80,96)
     };
-\addlegendentry{Train Acc.}
+\addlegendentry{Train Accuracy}
 
 % Validation accuracy
-\addplot[thick, color=hlgreen, mark=triangle*, mark size=1.5pt, mark options={fill=hlgreen}]
+\addplot[line width=1pt, color=hlgreen, mark=triangle*, mark size=1.3pt,
+         mark options={fill=hlgreen, solid}, mark repeat=3]
     coordinates {
         (0,26) (3,42) (5,52) (8,60) (10,65) (13,70) (15,73)
         (18,76) (20,78) (23,80) (25,80.5) (28,81) (30,81.5)
         (33,81.8) (35,82) (38,82.2) (40,82.3) (43,82.55) (45,82.2)
         (50,82.0) (55,81.8) (60,81.5) (65,81.2) (70,81.0) (75,80.8) (80,80.5)
     };
-\addlegendentry{Val Acc.}
+\addlegendentry{Val Accuracy}
 
 % Best epoch marker
-\draw[thick, dashed, goldaccent] (axis cs:43,20) -- (axis cs:43,82.55);
-\node[font=\tiny, goldaccent, anchor=south west] at (axis cs:44,30) {Best: 82.55\%};
-\node[font=\tiny, goldaccent, anchor=south west] at (axis cs:44,25) {(epoch 43)};
+\draw[line width=0.7pt, dashed, goldaccent] (axis cs:43,20) -- (axis cs:43,84);
+\node[fill=white, draw=goldaccent, rounded corners=2pt, inner sep=2pt,
+      font=\scriptsize\bfseries, text=goldaccent]
+    at (axis cs:61,30) {Best: 82.55\% (ep.\,43)};
+\draw[->, goldaccent, line width=0.5pt] (axis cs:55,31) -- (axis cs:44,31);
+
+% Overfitting gap annotation
+\draw[<->, headerblue!60, line width=0.5pt] (axis cs:70,81.0) -- (axis cs:70,95.5);
+\node[font=\tiny, color=headerblue!70, anchor=west] at (axis cs:71,88) {gap};
 
 \end{axis}
 
 % TF ratio on right y-axis
 \begin{axis}[
-    width=\columnwidth,
-    height=5.2cm,
-    xmin=0, xmax=80,
+    width=0.98\columnwidth,
+    height=5.5cm,
+    xmin=0, xmax=82,
     ymin=0, ymax=1.15,
     ylabel={TF Ratio ($\rho$)},
-    ylabel style={font=\small, color=eagcolor},
-    yticklabel style={font=\tiny, color=eagcolor},
+    ylabel style={font=\footnotesize, color=eagcolor, at={(0.97,0.5)}},
+    yticklabel style={font=\scriptsize, color=eagcolor},
     ytick={0, 0.25, 0.5, 0.75, 1.0},
     axis y line*=right,
     axis x line=none,
     legend style={
-        at={(0.98,0.55)}, anchor=east,
-        font=\tiny,
+        at={(0.03,0.60)}, anchor=north west,
+        font=\scriptsize,
         draw=tableborder,
         fill=white,
-        fill opacity=0.9,
+        fill opacity=0.92,
+        inner sep=3pt,
     },
 ]
-\addplot[thick, color=eagcolor, densely dashed, mark=none]
+% TF shading
+\addplot[eagcolor!15, forget plot, draw=none, fill opacity=0.4]
+    coordinates {(0,1.0) (5,0.80) (10,0.60) (15,0.40) (20,0.20) (25,0.0) (25,0) (0,0)} \closedcycle;
+\addplot[line width=1pt, color=eagcolor, densely dashed, mark=none]
     coordinates {
         (0,1.0) (5,0.80) (10,0.60) (15,0.40) (20,0.20) (25,0.0)
         (30,0) (40,0) (50,0) (60,0) (70,0) (80,0)
     };
-\addlegendentry{TF Ratio}
+\addlegendentry{TF Ratio ($\rho$)}
 \end{axis}
 \end{tikzpicture}
-\caption{Training dynamics for v5.3. The 12--13 pp overfitting gap reflects the limited speech data (4,424 train samples). Teacher forcing (dashed orange) decays to zero by epoch 25, after which the model uses its own emotion probe for gating.}
+\caption{Training dynamics for v5.3. The shaded gap between training ($\sim$95\%) and validation ($\sim$82.5\%) reflects limited speech data (4,424 samples). Teacher forcing (orange shading) decays to zero by epoch 25.}
 \label{fig:training_curves}
 \end{figure}
 
@@ -669,45 +730,49 @@ Figure~\ref{fig:training_curves} shows training and validation curves. Training 
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-    ybar,
-    bar width=16pt,
-    width=\columnwidth,
-    height=5.5cm,
+    ybar=0pt,
+    bar width=18pt,
+    width=0.98\columnwidth,
+    height=5.8cm,
     ylabel={Validation Accuracy (\%)},
-    ylabel style={font=\small},
+    ylabel style={font=\footnotesize, at={(0.06,0.5)}},
     symbolic x coords={v1, v2, v3, v4, v5.3},
     xtick=data,
-    xticklabel style={font=\small\bfseries},
-    yticklabel style={font=\small},
+    xticklabel style={font=\footnotesize\bfseries, yshift=-1pt},
+    yticklabel style={font=\scriptsize},
     ymin=0, ymax=100,
     ytick={0, 20, 40, 60, 80, 100},
     nodes near coords,
-    nodes near coords style={font=\scriptsize\bfseries, anchor=south},
+    nodes near coords style={font=\scriptsize\bfseries, anchor=south, yshift=1pt},
     grid=major,
-    grid style={dashed, gray!20},
-    every node near coord/.append style={yshift=1pt},
-    enlarge x limits=0.2,
+    grid style={dashed, gray!18},
+    major grid style={line width=0.25pt},
+    enlarge x limits=0.18,
+    clip=false,
 ]
-\addplot[
-    fill=headerblue!60,
-    draw=headerblue,
-    postaction={
-        pattern=north east lines,
-        pattern color=headerblue!30,
-    },
-] coordinates {
-    (v1,25) (v2,55.92) (v3,65.97) (v4,81.94) (v5.3,82.55)
-};
+% Gradient-colored bars: lighter for lower values
+\addplot[fill=headerblue!25, draw=headerblue!60, line width=0.5pt] coordinates {(v1,25)};
+\addplot[fill=headerblue!40, draw=headerblue!70, line width=0.5pt] coordinates {(v2,55.92)};
+\addplot[fill=headerblue!50, draw=headerblue!80, line width=0.5pt] coordinates {(v3,65.97)};
+\addplot[fill=headerblue!65, draw=headerblue!90, line width=0.5pt] coordinates {(v4,81.94)};
+\addplot[fill=hlgreen!35, draw=hlgreen!80, line width=0.8pt] coordinates {(v5.3,82.55)};
+\legend{}
+
+% Arrow annotation for biggest jump
+\draw[-{Stealth[length=5pt]}, line width=0.8pt, hlgreen]
+    (axis cs:v3,70) -- (axis cs:v4,70);
+\node[font=\scriptsize\bfseries, color=hlgreen, anchor=south, inner sep=2pt]
+    at (axis cs:v3,71) {$+$15.97\,pp};
+\node[font=\tiny, color=hlgreen!80, anchor=north]
+    at (axis cs:v3,69.5) {\textit{Class rebalancing}};
+
+% Star marker on best
+\node[font=\scriptsize, color=hlgreen, anchor=south] at (axis cs:v5.3,84)
+    {$\bigstar$};
+
 \end{axis}
-
-% Annotations
-\draw[->, thick, hlgreen, >=Stealth]
-    ([xshift=10pt] current axis.origin -| {axis cs:v3,0}) ++(0,4.0cm)
-    -- ++(0.6cm, 1.0cm)
-    node[right, font=\tiny\bfseries, color=hlgreen, align=left] {+15.97 pp\\Class rebalancing};
-
 \end{tikzpicture}
-\caption{Accuracy progression across major AMERS versions. The largest improvement ($+$15.97 pp) came from class rebalancing in v4, not from architectural innovations. CMMA contributed $+$0.61 pp on top of v4.}
+\caption{Accuracy progression across major AMERS versions. The largest improvement ($+$15.97\,pp) came from class rebalancing in v4, not from architectural innovations. CMMA contributed $+$0.61\,pp on top of v4. Star marks the best model.}
 \label{fig:version_progression}
 \end{figure}
 
@@ -720,9 +785,8 @@ Figure~\ref{fig:version_progression} reveals that data-level improvements (class
 % ================================================================
 \begin{figure}[t]
 \centering
-\begin{tikzpicture}[scale=0.62, every node/.style={font=\small}]
-    % Define data (row = true, col = predicted)
-    % Angry, Happy, Sad, Neutral
+\begin{tikzpicture}[scale=0.72, every node/.style={font=\small}]
+    % Define data (row = true, col = predicted) — percentages
     \def\confdata{
         {80, 8, 5, 7},
         {5, 77, 4, 14},
@@ -730,58 +794,64 @@ Figure~\ref{fig:version_progression} reveals that data-level improvements (class
         {4, 12, 3, 81}%
     }
     \def\labels{{"Angry","Happy","Sad","Neutral"}}
-    \def\nclasses{4}
 
-    % Color function: map value to blue intensity
+    % Draw cells with refined color mapping
     \foreach \i in {0,...,3} {
         \foreach \j in {0,...,3} {
             \pgfmathsetmacro{\val}{{\confdata}[\i][\j]}
-            % Diagonal cells get green tint, off-diagonal get red tint
             \ifnum\i=\j
-                \pgfmathsetmacro{\intensity}{max(10, \val)}
+                % Diagonal: green gradient (stronger for higher accuracy)
+                \pgfmathsetmacro{\intensity}{max(15, \val * 0.95)}
                 \fill[hlgreen!\intensity!white] (\j, -\i) rectangle (\j+1, -\i-1);
             \else
-                \pgfmathsetmacro{\intensity}{min(80, \val * 2.5)}
+                % Off-diagonal: red gradient (capped, subtle for low errors)
+                \pgfmathsetmacro{\intensity}{min(65, \val * 3.5)}
                 \fill[hlred!\intensity!white] (\j, -\i) rectangle (\j+1, -\i-1);
             \fi
-            % Value text
+            % Cell value
             \pgfmathsetmacro{\valint}{int(\val)}
             \ifnum\i=\j
-                \node[font=\normalsize\bfseries] at (\j+0.5, -\i-0.5) {\valint\%};
+                \node[font=\normalsize\bfseries, color=white!20!black]
+                    at (\j+0.5, -\i-0.5) {\valint\%};
             \else
-                \node[font=\small] at (\j+0.5, -\i-0.5) {\valint\%};
+                \pgfmathtruncatemacro{\v}{\val}
+                \ifnum\v>10
+                    \node[font=\small\bfseries, color=hlred!80!black]
+                        at (\j+0.5, -\i-0.5) {\valint\%};
+                \else
+                    \node[font=\small, color=darkgray!80]
+                        at (\j+0.5, -\i-0.5) {\valint\%};
+                \fi
             \fi
         }
     }
 
-    % Grid lines
-    \foreach \i in {0,...,4} {
-        \draw[gray!50] (\i, 0) -- (\i, -4);
-        \draw[gray!50] (0, -\i) -- (4, -\i);
+    % Inner grid
+    \foreach \i in {1,...,3} {
+        \draw[white, line width=1.2pt] (\i, 0) -- (\i, -4);
+        \draw[white, line width=1.2pt] (0, -\i) -- (4, -\i);
     }
     % Outer border
-    \draw[thick, headerblue] (0,0) rectangle (4,-4);
+    \draw[headerblue, line width=1pt, rounded corners=1pt] (0,0) rectangle (4,-4);
 
-    % Column labels (predicted)
-    \foreach \j in {0,...,3} {
-        \pgfmathsetmacro{\lbl}{\labels[\j]}
-        \node[font=\small\bfseries, color=headerblue, rotate=35, anchor=south west]
-            at (\j+0.15, 0.15) {\lbl};
+    % Column labels (predicted) — horizontal, centered
+    \foreach \j/\lbl in {0/Angry, 1/Happy, 2/Sad, 3/Neutral} {
+        \node[font=\footnotesize\bfseries, color=headerblue]
+            at (\j+0.5, 0.35) {\lbl};
     }
 
     % Row labels (true)
-    \foreach \i in {0,...,3} {
-        \pgfmathsetmacro{\lbl}{\labels[\i]}
-        \node[font=\small\bfseries, color=headerblue, anchor=east]
-            at (-0.15, -\i-0.5) {\lbl};
+    \foreach \i/\lbl in {0/Angry, 1/Happy, 2/Sad, 3/Neutral} {
+        \node[font=\footnotesize\bfseries, color=headerblue, anchor=east]
+            at (-0.2, -\i-0.5) {\lbl};
     }
 
     % Axis labels
-    \node[font=\small\bfseries, color=headerblue] at (2, 1.1) {Predicted};
-    \node[font=\small\bfseries, color=headerblue, rotate=90] at (-1.3, -2) {True};
+    \node[font=\footnotesize\bfseries, color=headerblue] at (2, 0.85) {Predicted};
+    \node[font=\footnotesize\bfseries, color=headerblue, rotate=90] at (-1.5, -2) {True};
 
 \end{tikzpicture}
-\caption{Confusion matrix for v5.3. Diagonal entries (green) show per-class accuracy. The most common confusion is happy$\to$neutral (14\%), consistent with acoustic similarity of positive-valence states.}
+\caption{Confusion matrix for v5.3. Diagonal entries (green) show per-class accuracy. The most common confusions are happy$\to$neutral (14\%) and neutral$\to$happy (12\%), consistent with acoustic similarity of positive-valence states. Errors $>$10\% shown in bold red.}
 \label{fig:confusion_matrix}
 \end{figure}
 
