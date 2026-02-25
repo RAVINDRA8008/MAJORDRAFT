@@ -41,19 +41,17 @@ EEG (DEAP) + Speech (IEMOCAP) → 4-class emotion classification (Angry, Happy, 
 - Identified key problems: class imbalance (37x in DEAP), weak fusion, unstable GAN
 
 ### Why It Failed
-1. **Catastrophic class imbalance (37×):** DEAP had 41,940 Happy samples vs only 1,140 Angry — the model learned to predict Happy/Neutral for everything and still got decent loss, making Angry nearly unlearnable
-2. **Concatenation fusion is naive:** Simply stacking EEG + speech embeddings forces the MLP to discover cross-modal relationships from scratch with no structural guidance — the model mostly ignored one modality
-3. **Vanilla GAN mode collapse:** The conditional GAN suffered from mode collapse — generated samples clustered around class means instead of adding genuine diversity, providing no real augmentation benefit
-4. **Index-based pairing was meaningless:** Pairing EEG sample #1000 with speech sample #1000 by array index meant the two modalities often had different emotion labels — the model received contradictory supervision
-5. **RL with no stable baseline:** PPO tried to optimize augmentation ratio on top of a broken fusion pipeline — optimizing a hyperparameter on a fundamentally flawed model just amplified the flaws
+- **Simple concatenation fusion** — just stacking EEG + speech vectors throws away inter-modal relationships; the MLP couldn't learn cross-modal correlations from flat concatenation
+- **Vanilla conditional GAN** — training was unstable (mode collapse), generated low-quality augmented samples that added noise rather than useful data
+- **No class balancing** — DEAP has 37× imbalance (Angry: 1,140 vs Happy: 41,940); model learned to predict majority class
+- **Index-based pairing** — EEG sample #1234 paired with speech sample #1234 regardless of emotion label, creating random cross-modal pairs
+- **RL agent unconstrained** — PPO had no safety guard and actively degraded accuracy
 
 ### Limitations
-- No cross-modal attention mechanism — modalities were treated independently until the final concatenation
-- No domain adaptation — DEAP (lab-recorded EEG) and IEMOCAP (acted speech) have very different distributions
-- No contrastive pretraining — encoders trained purely supervised on small labeled data
-- Cross-entropy loss with no class weighting — majority classes dominated the gradient
-- No mixed precision training — slow iteration on GPU
-- No formal evaluation metrics collected — impossible to compare quantitatively
+- No formal metrics collected — impossible to compare quantitatively with later versions
+- No label-aligned pairing meant the fusion model received contradictory supervision signals
+- GAN mode collapse meant augmentation was essentially random noise injection
+- No early stopping or learning rate scheduling — training was unstable
 
 ---
 
@@ -93,19 +91,17 @@ EEG (DEAP) + Speech (IEMOCAP) → 4-class emotion classification (Angry, Happy, 
 - RL agent was destructive — degraded accuracy when applied
 
 ### Why It Failed to Go Higher
-1. **Class imbalance still untreated at source:** While FocalLoss down-weighted easy (majority) samples, the underlying 37× imbalance in DEAP meant the EEG encoder still could not learn Angry-class features — only 1,140 Angry EEG samples vs 41,940 Happy
-2. **EEG encoder was too weak:** A 2-layer attention network on 160-dim features achieved only ~23% standalone accuracy — the fusion head was essentially working with one useful modality (speech at 55.8%) and one near-random modality (EEG)
-3. **Gated fusion still shallow:** The sigmoid gate learned a single scalar mixing weight — no token-level or class-level modality weighting, so the gate settled on a fixed compromise for all emotions
-4. **RL agent was destructive:** PPO augmentation changed training distribution dynamically, but the reward signal was too noisy and the fusion model too fragile — every RL run degraded the base model
-5. **No pretraining:** Encoders trained from scratch on small labeled datasets, limiting representation quality
+- **37× class imbalance untouched** — despite balanced sampling, the underlying DEAP distribution was still 37:1 (Angry vs Happy), causing the EEG encoder to learn biased representations
+- **EEG encoder only 23% standalone accuracy** — the 2-layer attention network couldn't extract meaningful features from the imbalanced data, so fusion received poor EEG embeddings
+- **Gated fusion was shallow** — single sigmoid gate couldn't model complex cross-modal interactions; it was just a weighted average
+- **RL agent was destructive** — PPO augmentation control reduced accuracy rather than improving it; no safety mechanism to prevent degradation
 
 ### Limitations
-- DEAP class imbalance (37×) not addressed at the data level — only loss-level mitigation
-- EEG encoder too shallow (2 layers, no CLS token) — poor standalone accuracy (~23%)
-- No contrastive or self-supervised pretraining for either encoder
-- No domain adaptation between lab EEG and acted speech corpora
-- Single-scalar gated fusion — no per-class or per-token modality weighting
-- Validation accuracy noisy due to random cross-modal pairing each evaluation pass
+- 55.92% accuracy is only marginally above random (25%) for 4 classes
+- Angry F1 at 0.38 means the model almost never correctly predicts anger
+- No contrastive pretraining — encoders trained with supervised loss only, missing self-supervised representation quality
+- No domain adaptation — DEAP (EEG, lab setting) and IEMOCAP (speech, acted) have significant domain gap
+- Fixed fusion architecture — no cross-modal attention, just element-wise gating
 
 ---
 
@@ -136,20 +132,17 @@ EEG (DEAP) + Speech (IEMOCAP) → 4-class emotion classification (Angry, Happy, 
 - Still bottlenecked by DEAP class imbalance (37x ratio untouched)
 
 ### Why It Failed to Go Higher
-1. **Class imbalance was STILL the elephant in the room:** Despite all the research-grade additions, the 37× DEAP imbalance remained untouched — the EEG encoder was still at ~23% standalone accuracy, and no amount of contrastive pretraining or DANN could fix an encoder that never sees enough Angry samples
-2. **Frozen encoders during fusion:** Transformer fusion trained on top of frozen encoder embeddings — the encoders could not adapt their representations to what the fusion head actually needed
-3. **RL v2 still destructive:** Even with composite reward (acc + F1 + balance − overfit penalty) and reward normalization, PPO made the fusion model worse every time — the action space (augmentation ratio control) simply didn't help
-4. **Contrastive pretraining helped representations but not classification:** SimCLR/NT-Xent created better-clustered embeddings, but the downstream classifier still suffered from the same class imbalance during fine-tuning
-5. **DANN alignment was coarse:** Domain adversarial training aligned EEG and speech distributions globally, but emotion-specific alignment was lacking — Angry EEG and Angry speech were not necessarily close in the aligned space
+- **37× class imbalance STILL untouched** — the single biggest bottleneck remained; contrastive learning and DANN improved representation quality but couldn't fix fundamentally skewed class distributions
+- **EEG encoder architecture unchanged** — still a 2-layer network, now with better pretrained weights but same limited capacity
+- **Frozen encoders during fusion** — transformer fusion trained on fixed embeddings (no end-to-end fine-tuning), limiting how much the fusion could adapt the representations
+- **RL v2 still destructive** — despite composite reward (acc + F1 + balance − overfit penalty), PPO augmentation control degraded accuracy; safety guard correctly reverted
 
 ### Limitations
-- DEAP class imbalance (37×) — the single biggest bottleneck, still completely unaddressed
-- Encoders frozen during fusion training — no end-to-end gradient flow
-- Transformer fusion with only 2 layers and 4 heads — limited cross-modal modeling capacity
-- DANN uses a single domain discriminator — no class-conditional domain adaptation
-- RL agent's action space (augmentation ratio) too limited to be useful
-- No per-class modality weighting — all emotions treated identically during fusion
-- Speech encoder architecture unchanged from v2 (no attention pooling)
+- 65.97% accuracy is decent but well below the 75% target
+- No end-to-end training — encoders frozen during fusion means the system can't jointly optimize representations for cross-modal classification
+- Transformer fusion had only 2 layers with 4 heads — relatively shallow cross-modal attention
+- DANN domain adaptation treated DEAP and IEMOCAP as two domains but they differ in modality (EEG vs speech), not just domain — the gradient reversal may not be optimal
+- Contrastive pretraining used generic augmentations, not emotion-specific ones
 
 ---
 
@@ -191,21 +184,18 @@ EEG (DEAP) + Speech (IEMOCAP) → 4-class emotion classification (Angry, Happy, 
 - RL safety guard correctly identified PPO as destructive and reverted
 - **Both project targets exceeded:** Accuracy ≥75% ✅, Macro F1 ≥0.72 ✅
 
-### Why It Couldn't Push Past ~82%
-1. **Encoders still frozen during fusion:** The transformer fusion head trained on fixed embeddings — even though encoders were individually stronger (37.5% EEG, 56.5% speech), they couldn't adapt to cross-modal interactions
-2. **Data quantity bottleneck:** Only 4,424 training speech utterances with ~5M total parameters — the model is fundamentally overparameterized for this dataset size, hitting the ceiling of what frozen-encoder fusion can achieve
-3. **No cross-modal attention during encoding:** EEG and speech were encoded independently, then fused — the encoders couldn't use information from the other modality to refine their own representations
-4. **RL remained useless:** The PPO safety guard correctly detected degradation every time and reverted — the entire RL component added complexity without benefit
-5. **Mixup helps but isn't enough:** Input-level mixup (α=0.3) provided some regularization, but with frozen encoders the diversity of augmented embeddings was limited
+### Why It Didn't Go Higher
+- **Frozen encoder fusion** — fusion classifier trained on fixed embeddings; no gradient flows back to encoders, so representations can't adapt to the fusion objective
+- **No cross-modal attention during encoding** — EEG and speech encoded independently with no interaction until the fusion layer, missing early-stage complementary features
+- **RL still destructive** — even with safety guard, PPO could not improve accuracy; augmentation ratio control via RL appears fundamentally mismatched to this problem
+- **Modest EEG standalone accuracy (37.5%)** — the EEG encoder, while much improved, still provides weak signal; fusion relies heavily on speech (56.5% standalone)
 
 ### Limitations
-- Encoders frozen during fusion — no end-to-end joint optimization
-- Small speech dataset (4,424 samples) with 5M+ parameters → overfitting ceiling
-- No bidirectional cross-modal attention — EEG cannot attend to speech features during encoding
-- No per-class modality weighting — fusion treats all emotions identically
-- RL agent adds engineering complexity with zero accuracy benefit
-- EEG standalone accuracy (37.5%) still relatively low — limits the multimodal ceiling
-- DEAP labels derived from valence/arousal thresholds — label noise is inherent
+- 81.94% accuracy with train accuracy at ~95% = significant overfitting gap
+- Only 4,424 speech training samples for a 7.3M parameter pipeline — data bottleneck
+- LayerNorm fusion is simpler than the transformer fusion from v3 — traded attention for stability
+- Mixup augmentation helps but is a workaround for insufficient data diversity
+- RL component is essentially dead weight — always reverted by safety guard across v1–v4
 
 ---
 
@@ -300,17 +290,190 @@ Raw EEG (B, 160)                          Raw Speech (B, T, 120)
 
 ### v5 Sub-Version Results
 
-| Version | Accuracy | What Changed | Why It Regressed |
-|---------|:--------:|-------------|-----------------|
+| Version | Accuracy | What Changed | Outcome |
+|---------|:--------:|-------------|---------|
 | v5.0 | 80.90% | Initial CMMA | EAG weights stuck at 0.50/0.50 |
 | v5.1 | 82.05% | Conservative encoder LR, higher EAG LR | EAG still not differentiating |
 | v5.2 | 75.15% | Teacher forcing + diversity loss | 100% TF caused massive overfit |
-| **v5.3** | **82.55%** | **Annealed TF (1→0 over 25 epochs)** | **BEST** |
-| v5.4 | 80.15% | + Embedding mixup + Model EMA | Mixup destructive, EMA-only val missed peaks |
-| v5.5 | 71.90% | + Confidence penalty | Penalty was backwards (minimized entropy) |
-| v5.6 | 69.00% | Fixed penalty + deterministic val | Over-regularized, small fixed val set |
-| v5.7 | — | Clean revert to v5.3 | Not tested (went to v5.8) |
-| v5.8 | 73.50% | + R-Drop + DropPath + InputAugment | R-Drop doubled compute, augmentation too aggressive |
+| **v5.3** | **82.55%** | **Annealed TF (1→0 over 25 epochs)** | **BEST RESULT** |
+| v5.4 | 80.15% | + Embedding mixup + Model EMA | −2.4 pp regression |
+| v5.5 | 71.90% | + Confidence penalty | −10.65 pp regression |
+| v5.6 | 69.00% | Fixed penalty + deterministic val | −13.55 pp regression |
+| v5.7 | — | Clean revert to v5.3 | Not tested |
+| v5.8 | 73.50% | + R-Drop + DropPath + InputAugment | −9.05 pp regression |
+
+---
+
+### v5.0 — Initial CMMA (80.90%)
+
+**What changed:** First implementation of Cross-Modal Mutual Attention with Emotion-Aware Gating. Bidirectional cross-attention (3 layers), sigmoid gate (bias=−2.0), EAG with fixed class gate logits. Encoder LR factor = 0.1, EAG LR = 1× (same as CMMA).
+
+**Why it failed:**
+- EAG gate logits stayed at 0.50/0.50 for all emotions — the gating mechanism was dead
+- Equal LR for EAG and CMMA was too low for the gate parameters to learn meaningful per-class differences
+- Encoder LR at 0.1× was too aggressive — pretrained representations were degrading too fast
+- Without per-class differentiation, EAG was just an expensive identity function
+
+**Limitations:**
+- No mechanism to force gate diversity
+- Encoder fine-tuning started immediately (no frozen warmup)
+- EAG got the same LR as the much-larger CMMA layers
+
+---
+
+### v5.1 — Conservative LR + Higher EAG LR (82.05%)
+
+**What changed:** Reduced encoder LR factor from 0.1 to 0.05 (more conservative). Increased EAG-specific LR to 3× CMMA LR. Added frozen encoder phase (first 8 epochs). Added modality dropout (0.05). Increased samples per epoch from 5000 to 10000.
+
+**Why it failed to differentiate EAG:**
+- Despite 3× LR, EAG gate logits still converged to ~0.50/0.50
+- Without ground-truth supervision, the gating signal was too weak — the classification loss alone couldn't push per-class gates apart
+- The model found it easier to use CMMA cross-attention for modality weighting than EAG
+
+**Limitations:**
+- No teacher forcing — EAG had to discover per-class preferences purely from classification gradients
+- No explicit diversity loss to penalize uniform gates
+- Still a +1.15 pp improvement over v5.0 from the LR/warmup fixes alone
+
+---
+
+### v5.2 — Teacher Forcing + Diversity Loss (75.15%)
+
+**What changed:** Added teacher forcing (TF) — during training, EAG uses ground-truth labels instead of model predictions to select per-class gates. Added gate diversity loss (`−std(gate_logits)`) to penalize uniform weights. TF ratio = 1.0 (100% teacher forcing, always uses ground truth).
+
+**Why it failed:**
+- **100% teacher forcing was catastrophic** — at training time, the model always received perfect labels, so it learned to rely entirely on the oracle signal
+- At validation/test time (no labels available), the model had to use its own emotion probe predictions — which it never learned to do
+- Result: train accuracy ~99%, val accuracy 75% — **massive overfitting to the TF signal**
+- The model's emotion probe was untrained because TF bypassed it entirely
+
+**Limitations:**
+- TF ratio was never annealed — the model never practiced using its own predictions
+- Classic exposure bias problem: trained with oracle, tested without it
+- Gate diversity loss worked (gates differentiated!) but the model couldn't use them without TF
+- Dropped −6.9 pp from v5.1 despite the gates finally learning different weights
+
+---
+
+### v5.3 — Annealed Teacher Forcing (82.55%) ★ BEST
+
+**What changed:** Annealed TF ratio from 1.0→0.0 over 25 epochs (`tf_ratio = max(0, 1 − epoch/25)`). First 25 epochs: gradually reducing ground-truth label injection. After epoch 25: model uses only its own emotion probe predictions. All other params same as v5.1.
+
+**Why it succeeded:**
+- Annealing solved the exposure bias — model learned to bootstrap from ground truth then transition to self-reliance
+- Early epochs: TF helps EAG learn meaningful per-class preferences quickly
+- Middle epochs: model practices using its own probe predictions with decreasing label support
+- Late epochs: fully autonomous — EAG uses emotion probe, which is now well-trained
+- Gate diversity loss kept per-class weights differentiated throughout training
+- Result: **82.55% accuracy at epoch 43, with meaningful per-class modality weights**
+
+**Learned Modality Weights:**
+| Emotion | EEG Weight | Speech Weight | Dominant |
+|---------|:----------:|:-------------:|----------|
+| Angry | higher | lower | EEG |
+| Happy | ~balanced | ~balanced | — |
+| Sad | lower | higher | Speech |
+| Neutral | lower | higher | Speech |
+
+**Remaining Limitations:**
+- Still overfitting (train ~95%, val 82.55%) — 7.3M params with only 4,424 speech samples
+- Modality weight differences are modest (~0.55/0.45, not dramatic like 0.8/0.2)
+- Random val pairing introduces noise (~±1% variance between runs)
+- Cannot exceed ~83% without more data or fundamentally different approach
+
+---
+
+### v5.4 — Embedding Mixup + Model EMA (80.15%)
+
+**What changed:** Added embedding-level mixup (α=0.3) — interpolate EEG and speech embeddings between random samples. Added Model EMA (exponential moving average, decay=0.998) for smoother validation. Used EMA model for validation, raw model for training.
+
+**Why it failed:**
+- **Embedding mixup was destructive** — mixing embeddings from different emotion classes created unnatural intermediate representations that confused the CMMA cross-attention
+- Unlike input-level mixup (which works for images), embedding-level mixup destroys the learned manifold structure from DANN pretraining
+- **EMA-only validation was misleading** — EMA model is smoother but delayed; it missed sharp accuracy peaks from the raw model
+- Best raw-model checkpoint may have been skipped because EMA hadn't caught up yet
+- Net effect: −2.4 pp regression from two independently harmful additions
+
+**Limitations:**
+- No ablation done — couldn't tell which of the two changes (mixup or EMA) caused more harm
+- EMA comparison was done on random val pairs (different data each pass), making raw-vs-EMA comparison unreliable
+- Mixup label blending conflicted with focal loss class weights
+
+---
+
+### v5.5 — Confidence Penalty (71.90%)
+
+**What changed:** Removed embedding mixup. Added confidence penalty — intended to prevent overconfident predictions by adding entropy to the loss. Added best-of-two EMA comparison (evaluate both raw and EMA, keep whichever is better).
+
+**Why it failed:**
+- **The confidence penalty was implemented BACKWARDS** — computed `−entropy` (negative entropy) and ADDED it to the loss
+- Minimizing `loss + (−entropy)` = minimizing `loss − entropy` = MAXIMIZING negative entropy = **MINIMIZING entropy**
+- This forced the model to be maximally confident (one-hot predictions), the exact opposite of the intended effect
+- Result: train accuracy hit 99% (extreme overconfidence), val accuracy collapsed to 71.9%
+- The model learned to output near-one-hot probabilities regardless of input
+- Additionally, random val pairing made raw-vs-EMA comparison unreliable (different data each pass)
+
+**Limitations:**
+- Classic sign error bug — a single minus sign destroyed 10+ pp of accuracy
+- No unit test or sanity check to verify the penalty worked as intended
+- The EAG weights finally differentiated beautifully (Angry=0.67 EEG, Neutral=0.38 EEG) but accuracy was terrible — good gating can't compensate for a broken loss function
+
+---
+
+### v5.6 — Fixed Penalty + Deterministic Val (69.00%)
+
+**What changed:** Removed the broken confidence penalty entirely. Added deterministic validation dataset (`FixedPairValDataset`) with 2000 pre-computed pairs (seed=42) to eliminate val noise. Increased regularization: dropout 0.15→0.20, weight_decay 3e-4→5e-4, label_smoothing 0.1→0.15.
+
+**Why it failed:**
+- **Over-regularized** — three regularization knobs increased simultaneously (dropout, weight decay, label smoothing), on top of an architecture that was already regularized enough at v5.3 settings
+- **Deterministic val set too small** — 2000 fixed pairs (500/class) was unrepresentative of the full validation distribution
+- Model peaked at epoch 3 (69%) then **degraded to 56–59%** by epoch 20 — catastrophic forgetting of pretrained encoder representations under heavy regularization
+- The increased dropout/weight-decay was suppressing the fine-tuned encoder features faster than CMMA could learn to use them
+- Early stopping couldn't help because the model peaked in epoch 3 (before any meaningful training happened)
+
+**Limitations:**
+- Changed 3 hyperparameters at once — impossible to diagnose which caused the most harm
+- 2000 val pairs was too few for a 4-class problem — some class combinations were undersampled
+- The regularization increase was the opposite of what the small-data problem needed — needed more data diversity, not more capacity restriction
+
+---
+
+### v5.7 — Clean Revert to v5.3 (Not Tested)
+
+**What changed:** Complete strip of ALL experimental features added since v5.3: removed EMA, mixup, confidence penalty, deterministic val, increased regularization. Restored exact v5.3 hyperparameters: dropout=0.15, weight_decay=3e-4, label_smoothing=0.1. Removed dead code (FixedPairValDataset, ModelEMA classes). Net −66 lines of code.
+
+**Why not tested:** User skipped directly to designing v5.8 before running v5.7 on Colab. Code should reproduce ~82.55% since it's identical to v5.3.
+
+**Limitations:**
+- Same as v5.3 — ceiling around 82–83% due to data limitations
+- Dead code (FixedPairValDataset, ModelEMA) was left in the file (cleaned in v5.8, then re-added when reverting)
+
+---
+
+### v5.8 — R-Drop + DropPath + InputAugment (73.50%)
+
+**What changed:** Three proven regularization techniques added on top of v5.3:
+1. **R-Drop** (α=1.0) — forward each batch twice with different dropout masks, add symmetric KL divergence loss to enforce prediction consistency
+2. **Stochastic Depth / DropPath** (rate 0→0.1) — randomly skip CMMA block residuals with linearly increasing probability across layers
+3. **Input Augmentation** — Gaussian noise (σ=0.05) on EEG, SpecAugment-style time masking (T=10) and frequency masking (F=5) on speech MFCCs
+
+All other hyperparameters kept identical to v5.3.
+
+**Why it failed:**
+- **R-Drop doubled forward computation** — each batch processed twice through the entire model, effectively halving the number of unique samples seen per epoch for the same wall-clock time
+- **R-Drop's KL divergence was too strong at α=1.0** — forced the model to produce identical outputs regardless of dropout mask, which constrained the model's capacity to learn discriminative features
+- **Input augmentation was too aggressive** — Gaussian noise σ=0.05 on 160-dim EEG features (which are already compact differential entropy values) distorted the signal; SpecAugment masking on 80×120 MFCCs removed too much information from already-short utterances
+- **DropPath randomly disabled cross-attention residuals** — the gated cross-attention (which starts near 0.12 due to bias=−2.0) was further suppressed by stochastic depth, preventing the model from learning effective cross-modal interactions
+- The three techniques are individually proven for large-scale models (ViT, BERT) but were **too aggressive for a 7.3M parameter model trained on 4,424 speech samples**
+- Model peaked at epoch 4 (73.50%) and EAG weights differentiated (Angry EEG=0.60, Neutral Speech=0.59) but classification accuracy was poor
+
+**Limitations:**
+- No individual ablation — three techniques added simultaneously, can't isolate which hurt most
+- R-Drop was designed for models like BERT (110M params) on datasets with 100k+ samples — fundamentally mismatched scale
+- DropPath rate of 0.1 means 10% chance of dropping the deepest CMMA layer entirely — significant for only 3 layers
+- All three techniques reduce effective model capacity, which is the opposite of what a data-limited regime needs
+
+---
 
 ### v5.3 Learned Modality Weights (Best Run)
 | Emotion | EEG Weight | Speech Weight | Dominant |
@@ -320,39 +483,15 @@ Raw EEG (B, 160)                          Raw Speech (B, T, 120)
 | Sad | lower | higher | Speech |
 | Neutral | lower | higher | Speech |
 
-### Why v5.3 Couldn't Push Past ~83%
-1. **Fundamental data scarcity:** Only 4,424 speech training samples with 7.3M parameters — the model is 1,650× overparameterized relative to the smaller modality. Train accuracy routinely hit 95–99% while val plateaued at 82–83%, confirming overfitting as the hard ceiling
-2. **Random cross-modal pairing:** Each epoch creates different EEG–speech pairs via random sampling — validation accuracy fluctuates ±2–3% between runs due to pair variance, making it hard to distinguish genuine improvements from noise
-3. **EEG label noise:** DEAP emotion labels are derived from self-reported valence/arousal scores thresholded into 4 quadrants — this introduces systematic label noise (~10–15% estimated disagreement), creating an accuracy ceiling regardless of model quality
-4. **Single dataset per modality:** EEG comes only from DEAP (32 lab subjects), speech only from IEMOCAP (10 actors) — no external data for pretraining diversity or cross-dataset validation
-5. **Modality quality gap:** EEG standalone accuracy is ~37.5% (near random for 4 classes) while speech is ~56.5% — the fusion is asymmetric, and the weaker EEG modality contributes limited discriminative signal
-
-### Why v5.4–v5.8 All Regressed
-| Version | Accuracy | Root Cause of Regression |
-|---------|:--------:|-------------------------|
-| v5.4 (80.15%) | −2.4 pp | **Embedding mixup** blended representations from different classes at the embedding level, creating ambiguous samples that confused the classifier. **Model EMA** was used for validation only, meaning the reported "best" model was the EMA shadow — but the EMA checkpoint was never saved, so actual deployed model was worse |
-| v5.5 (71.90%) | −10.65 pp | **Confidence penalty code had a critical bug:** computed `−entropy` (negative entropy) and ADDED it to the loss. This MINIMIZED entropy → MAXIMIZED confidence → extreme overconfidence. Train accuracy reached 99%, val collapsed to 65%. Random val pairing made EMA comparison unreliable each pass |
-| v5.6 (69.00%) | −13.55 pp | **Over-regularized:** dropout 0.15→0.20, weight_decay 3e-4→5e-4, label_smoothing 0.1→0.15 — all increased simultaneously. **Deterministic val set** of only 2,000 fixed pairs was too small and unrepresentative. Model peaked at epoch 3 (69%) then degraded to 56% by epoch 20 — catastrophic forgetting of encoder representations under heavy regularization |
-| v5.8 (73.50%) | −9.05 pp | **R-Drop doubled forward passes** (2× compute, 2× gradient noise) on an already small dataset. **DropPath** randomly skipped CMMA residuals, destabilizing the gated cross-attention that needs consistent gradient flow to learn. **InputAugment** (Gaussian noise + SpecAugment) was too aggressive for already-small EEG features (160-dim) |
-
 ### Lessons Learned from v5
 1. **v5.3's annealed teacher forcing was the sweet spot** — starts with ground truth labels to bootstrap EAG, gradually transitions to model predictions
 2. **Every "improvement" after v5.3 caused regression** — the architecture is well-tuned, additional regularization hurts
 3. **Small dataset (4,424 speech samples) is the fundamental bottleneck** — 7.3M parameters means overfitting is inevitable
 4. **Gate diversity loss is essential** — without it, per-class gates collapse to uniform 0.50/0.50
 5. **Discriminative LR matters** — encoders need 20× lower LR than CMMA to preserve pretrained representations
-6. **Never change multiple things at once** — v5.4–v5.8 each introduced 2–3 simultaneous changes, making diagnosis impossible until reverted
-7. **Bugs in regularization are catastrophic** — the backwards confidence penalty (v5.5) destroyed the model in a way that looked like normal overfitting, hiding the root cause
-
-### Limitations (v5 Overall)
-- **Data ceiling:** 4,424 speech samples is insufficient for a 7.3M parameter model — no architectural change can overcome this without more data or much stronger pretraining
-- **Label noise:** DEAP valence/arousal → 4-class mapping introduces ~10–15% systematic label noise, creating a hard accuracy ceiling around 85–90%
-- **Single-dataset per modality:** No cross-corpus validation or external pretraining data
-- **Random pairing noise:** Validation accuracy varies ±2–3% across runs due to stochastic EEG–speech pairing
-- **EEG modality weakness:** EEG standalone at ~37.5% contributes limited discriminative value — the system is heavily speech-dependent
-- **No subject-independent evaluation:** Train/val split is random, not subject-wise — some same-subject data appears in both splits, inflating accuracy
-- **Computational cost for small gains:** v5's end-to-end training is 5–10× slower than v4's frozen-encoder fusion, for only +0.61 pp improvement
-- **RL remains abandoned:** The PPO component (v1–v4) was never beneficial and was dropped entirely in v5 — represents wasted architectural complexity
+6. **Techniques designed for large-scale models don't transfer** — R-Drop, DropPath, and mixup all assume abundant data; they restrict capacity in a regime that needs more capacity
+7. **Change one thing at a time** — v5.4/v5.6/v5.8 each changed multiple knobs simultaneously, making diagnosis impossible
+8. **Always sanity-check loss terms** — v5.5's sign error (−entropy instead of +entropy) was a trivial bug with catastrophic impact
 
 ---
 
