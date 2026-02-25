@@ -1,24 +1,28 @@
-# Full LOSO 4-class experiment
-# Usage: python scripts/train_full_pipeline.py --config config/experiments/loso_4class.yaml
+# LOSO 4-class experiment — subject-independent evaluation
+# Usage: python scripts/v5_loso.py --config config/experiments/loso_4class.yaml
+#
+# Runs 32-fold Leave-One-Subject-Out cross-validation on DEAP.
+# Per fold: test=1 subject, val=1 subject, train=30 subjects.
+# IEMOCAP speech split is fixed (80/20) across all folds.
+#
+# Reduced hyperparameters to keep total runtime ~3 hours on L4 GPU.
+# Override individual folds: --start-fold 0 --end-fold 16
 
 seed: 42
 
-model:
-  eeg_encoder:
-    pretrain_epochs: 30
-  speech_encoder:
-    pretrain_epochs: 50
-  gan:
-    epochs: 200
-    batch_size: 128
-  fusion:
-    epochs: 100
-
-rl:
-  max_steps: 80
-  ppo_update_every: 10
-
-training:
-  log_every: 10
-  save_every: 20
-  early_stop_patience: 20
+v5:
+  epochs: 40                  # reduced from 80 (32 folds × 40 ≈ manageable)
+  patience: 10                # reduced from 20
+  samples_per_epoch: 8000     # reduced from 10000
+  warmup_epochs: 3            # reduced from 5
+  freeze_encoder_epochs: 5    # reduced from 8
+  batch_size: 64
+  lr: 0.0003
+  encoder_lr_factor: 0.05
+  eag_lr_factor: 3.0
+  weight_decay: 0.0003
+  grad_clip: 1.0
+  aux_loss_weight: 0.2
+  tf_anneal_epochs: 25
+  gate_div_weight: 0.1
+  label_smoothing: 0.1
