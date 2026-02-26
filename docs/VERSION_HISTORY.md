@@ -589,6 +589,62 @@ All other hyperparameters kept identical to v5.3.
 
 **Key Lesson:** Cross-subject feature normalization is as impactful as architectural design. The v1→v2 improvement (+21.44 pp) is larger than any single architecture change in the entire project history.
 
+**⚠️ Data Leakage Caveat:** LOSO v2 uses encoder weights pretrained (contrastive + DANN) on ALL 32 DEAP subjects. The test subject's EEG data was seen during encoder pretraining, violating strict subject independence. The 89.86% figure is therefore an upper bound. See Strict LOSO v2 below for the fully leak-free evaluation.
+
+---
+
+## Strict LOSO v2 — Fully Leak-Free Subject-Independent Evaluation
+
+**Goal:** Eliminate ALL data leakage by retraining the entire pipeline (contrastive + DANN + CMMA) per fold.
+
+**The Leak in LOSO v1/v2:**
+- `v3_pretrain_eeg.py` (contrastive) calls `deap.load_all()` — ALL 32 subjects
+- `v3_train_dann.py` (DANN) calls `deap.load_all()` — ALL 32 subjects
+- `v5_loso_v2.py` loads those global checkpoints per fold — test subject's data was in the encoder
+
+**Strict LOSO v2 Per-Fold Pipeline:**
+
+| Step | Stage | Data Used | Leakage? |
+|:----:|-------|-----------|:--------:|
+| 1 | Subject split | 1 test, 1 val, 30 train | — |
+| 2 | Cross-subject z-score normalization | Fit on 30 train only | ✅ Clean |
+| 3 | Contrastive EEG pretraining (SimCLR) | 30 train subjects only | ✅ Clean |
+| 4 | DANN domain adaptation | 30 train EEG + IEMOCAP train | ✅ Clean |
+| 5 | CMMA fusion training | 30 train EEG + IEMOCAP (fresh CMMA) | ✅ Clean |
+| 6 | Test evaluation | Held-out subject (never seen) | ✅ Clean |
+
+**Hyperparameters (per fold):**
+
+| Stage | Parameter | Value |
+|-------|-----------|:-----:|
+| Contrastive | Epochs | 60 |
+| Contrastive | Batch size | 512 |
+| Contrastive | Temperature (τ) | 0.07 |
+| DANN | Epochs | 20 |
+| DANN | Domain weight | 0.3 |
+| CMMA | Epochs | 60 |
+| CMMA | Patience | 15 |
+| CMMA | Focal gamma | 3.0 |
+| Test | Ensemble pairings | 5 |
+
+**Results:** *(to be filled after running on Colab)*
+
+| Metric | LOSO v1 | LOSO v2 (leaked) | Strict LOSO v2 |
+|--------|:-------:|:----------------:|:--------------:|
+| Mean accuracy | 68.41% ± 8.37% | 89.86% ± 6.86% | **TBD** |
+| Mean F1 (macro) | 0.575 | 0.744 | **TBD** |
+| Leak status | Encoders leaked | Encoders leaked | **✅ No leak** |
+
+**Expected Impact:**
+- The strict number will likely be ~75–82% (between v1 and leaked v2)
+- The difference between leaked v2 (89.86%) and strict v2 quantifies the encoder leak inflation
+- Cross-subject normalization improvement is genuine (not affected by leak)
+- EEG-only class weights improvement is genuine (not affected by leak)
+
+**Computational Tradeoff:**
+- LOSO v2: ~3–4 hours (loads global encoder checkpoints)
+- Strict LOSO v2: ~8–12 hours (retrains CL + DANN per fold = 32× pretraining)
+
 ---
 
 ## Overall Progression
@@ -613,7 +669,11 @@ LOSO v1: 68.41%  ── Baseline 32-fold LOSO evaluation
  │  (subject-independent baseline)
  ▼
 LOSO v2: 89.86%  ── Cross-subject norm, EEG-only weights, ensemble
-    (+21.44 pp)  ← BIGGEST SINGLE JUMP (evaluation methodology)
+ │  (+21.44 pp)  ← BIGGEST SINGLE JUMP (evaluation methodology)
+ │  ⚠️  encoder pretraining leak (all 32 subjects)
+ ▼
+Strict LOSO v2: TBD  ── Per-fold CL + DANN + CMMA (no leak)
+    (gold-standard subject-independent evaluation)
 ```
 
 ### What Mattered Most (Ranked by Impact)
@@ -702,6 +762,7 @@ amers/
 │   ├── v5_train_cmma.py         # CMMA end-to-end (current best)
 │   ├── v5_loso.py               # LOSO v1 — baseline 32-fold evaluation
 │   ├── v5_loso_v2.py            # LOSO v2 — improved LOSO (89.86%)
+│   ├── strict_loso_v2.py        # Strict LOSO v2 — fully leak-free
 │   └── evaluate.py
 ├── notebooks/
 │   └── 00_setup_and_run.ipynb   # Google Colab master notebook
@@ -722,5 +783,6 @@ amers/
 
 *Document generated: February 2026*
 *Best model (subject-dependent): v5.3 — 82.55% accuracy (commit 1751ad1)*
-*Best LOSO (subject-independent): LOSO v2 — 89.86% ± 6.86% accuracy (commit 3e82cf6)*
-*Current code: v5.3 + LOSO v2*
+*Best LOSO (leaked encoders): LOSO v2 — 89.86% ± 6.86% accuracy (commit 3e82cf6)*
+*Strict LOSO (no leak): Strict LOSO v2 — TBD (pending Colab run)*
+*Current code: v5.3 + LOSO v2 + Strict LOSO v2*

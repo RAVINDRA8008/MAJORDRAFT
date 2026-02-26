@@ -1004,7 +1004,7 @@ The key lessons are: \textbf{(1)}~data quality---particularly class balance---do
 \begin{enumerate}[leftmargin=*, label=\textcolor{headerblue}{\arabic*.}, itemsep=2pt]
     \item \textbf{Larger datasets} --- EEG foundation models and synthetic data generation could address the fundamental data bottleneck.
     \item \textbf{Pretrained speech models} --- wav2vec 2.0 or HuBERT features could improve speech representations for confusing classes (happy/neutral).
-    \item \textbf{Leak-free LOSO} --- Re-pretrain encoders per fold to eliminate the pretraining data leak identified in our current LOSO protocol. Our improved LOSO v2 (89.86\%) demonstrates that architectural improvements compound with proper evaluation methodology.
+    \item \textbf{Leak-free LOSO} --- Re-pretrain encoders per fold to eliminate the pretraining data leak identified in our current LOSO protocol. Our improved LOSO v2 (89.86\%) demonstrates that architectural improvements compound with proper evaluation methodology. We have implemented a strict LOSO protocol (\texttt{strict\_loso\_v2.py}) that retrains contrastive and DANN encoders per fold using only the 30 training subjects; results pending.
     \item \textbf{Additional modalities} --- Facial video, text transcripts, or peripheral physiological signals for breaking the performance ceiling.
     \item \textbf{Lightweight models} --- Given that data fixes outweigh model complexity, smaller models may reduce overfitting.
     \item \textbf{Real-time deployment} --- Streaming EEG/speech processing with incremental attention for HCI applications.
