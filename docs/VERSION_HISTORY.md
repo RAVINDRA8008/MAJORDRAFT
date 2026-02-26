@@ -14,6 +14,8 @@ EEG (DEAP) + Speech (IEMOCAP) → 4-class emotion classification (Angry, Happy, 
 | **v3**  | 65.97%   | ~0.60    | —         | —          | +Contrastive +DANN +Transformer |
 | **v4**  | 81.94%   | 0.8193   | 0.7552    | —          | Architecture overhaul |
 | **v5.3**| **82.55%** | **~0.83** | **~0.77** | 43       | **BEST — CMMA end-to-end** |
+| **LOSO v1** | 68.41% ± 8.37% | 0.575 | — | — | Baseline 32-fold subject-independent |
+| **LOSO v2** | **89.86% ± 6.86%** | **0.744** | — | — | **Improved LOSO (+21.44 pp)** |
 
 ### Targets vs Achieved
 
@@ -495,6 +497,100 @@ All other hyperparameters kept identical to v5.3.
 
 ---
 
+## LOSO v1 — Baseline Subject-Independent Evaluation (68.41%)
+
+**Goal:** Evaluate cross-subject generalization using leave-one-subject-out (LOSO) on DEAP's 32 subjects.
+
+**Protocol:**
+- 32 folds: each fold holds out 1 subject for testing, next subject for validation, remaining 30 for training
+- IEMOCAP speech split 80/20 (constant across all folds)
+- Each fold trains from scratch with fresh encoder weights initialized from pretrained checkpoints
+- Reduced hyperparameters: 40 epochs, patience 10, 5,000 samples/epoch
+- Per-subject z-score normalization (same as preprocessing)
+
+**Results:**
+
+| Metric | Value |
+|--------|:-----:|
+| Mean accuracy | 68.41% ± 8.37% |
+| Median accuracy | 70.29% |
+| Range | [48.58%, 86.46%] |
+| Mean F1 (macro) | 0.575 ± 0.059 |
+| Best fold | Subject 12 — 86.46% |
+| Worst fold | Subject 5 — 48.58% |
+
+**Per-class pooled F1:** Happy = 0.12, Sad = 0.73, Angry = 0.85, Neutral = 0.70
+
+**Analysis:**
+- The ~14 pp drop from subject-dependent (82.55%) to LOSO (68.41%) was expected due to inter-subject EEG variability
+- **Happy collapsed to F1 = 0.12** — its extreme minority status (1,140 / 76,800 = 1.5%) meant the model couldn't generalize Happy patterns across subjects
+- High fold variance (std 8.37%) reflected known inter-subject EEG differences in DEAP
+- Encoder pretraining (DANN, contrastive) used all 32 subjects → partial data leakage into per-fold LOSO
+
+---
+
+## LOSO v2 — Improved Subject-Independent Evaluation (89.86%)
+
+**Goal:** Close the LOSO gap through normalization, weighting, and evaluation improvements.
+
+**Five Key Improvements:**
+
+1. **Cross-subject z-score normalization** — Compute mean/std on the 30 training subjects; apply to val/test. Removes inter-subject distribution shift. *This was the single largest contributor.*
+2. **EEG-only class weights with √ dampening** — Compute class weights from DEAP labels only (not diluted by IEMOCAP's balanced distribution); apply `sqrt()` dampening so Happy gets ~4× weight instead of ~37×.
+3. **Higher focal gamma (γ = 3.0 vs. 2.0)** — Stronger focus on hard minority examples.
+4. **Extended training** — 60 epochs (vs. 40), patience 15, 10K samples/epoch, warmup 5 epochs.
+5. **Multi-pairing test ensemble (5×)** — Average logits over 5 random speech pairings per EEG sample, reducing test-time pairing variance.
+
+**Hyperparameter Overrides (vs. v1):**
+
+| Parameter | LOSO v1 | LOSO v2 |
+|-----------|:-------:|:-------:|
+| Epochs | 40 | 60 |
+| Patience | 10 | 15 |
+| Samples/epoch | 5,000 | 10,000 |
+| Focal gamma | 2.0 | 3.0 |
+| Label smoothing | 0.05 | 0.05 |
+| Gate div weight | 0.15 | 0.15 |
+| Warmup epochs | — | 5 |
+| Freeze encoder epochs | — | 5 |
+| Test ensembles | 1 | 5 |
+
+**Results:**
+
+| Metric | LOSO v1 | LOSO v2 | Delta |
+|--------|:-------:|:-------:|:-----:|
+| Mean accuracy | 68.41% ± 8.37% | **89.86% ± 6.86%** | **+21.44 pp** |
+| Median accuracy | 70.29% | **90.81%** | +20.52 pp |
+| Range | [48.58%, 86.46%] | [64.62%, 98.42%] | — |
+| Mean F1 (macro) | 0.575 ± 0.059 | **0.744 ± 0.097** | +0.169 |
+| Best fold | 86.46% (subj. 12) | **98.42% (subj. 14)** | — |
+| Worst fold | 48.58% (subj. 5) | 64.62% (subj. 9) | — |
+
+**Per-class Pooled F1 Comparison:**
+
+| Class | LOSO v1 | LOSO v2 | Delta |
+|-------|:-------:|:-------:|:-----:|
+| Happy | 0.12 | **0.36** | +0.24 |
+| Sad | 0.73 | **0.92** | +0.19 |
+| Angry | 0.85 | **0.98** | +0.13 |
+| Neutral | 0.70 | **0.87** | +0.17 |
+
+**Pooled Classification Report (LOSO v2):**
+- Weighted average — Precision: 0.94, Recall: 0.90, F1: 0.91
+- Overall pooled accuracy: **90%**
+
+**Analysis:**
+- The +21.44 pp jump is almost entirely due to **cross-subject normalization** — fitting z-score statistics on training subjects and applying them to the held-out subject
+- Happy F1 improved 3× (0.12 → 0.36) thanks to EEG-only sqrt-dampened class weights, but remains the weakest class due to extreme minority status
+- LOSO v2 (89.86%) actually **exceeds** the subject-dependent accuracy (82.55%) — the subject-dependent evaluation's random 80/20 split mixes subjects, and per-subject z-scores hide the cross-subject shift that normalization fixes
+- 26 of 32 folds exceed 82.55%; only 2 folds fall below 75%
+- Worst fold (subject 9, 64.62%) likely has highly atypical EEG patterns
+- Encoder pretraining leak caveat still applies (DANN/contrastive used all 32 subjects)
+
+**Key Lesson:** Cross-subject feature normalization is as impactful as architectural design. The v1→v2 improvement (+21.44 pp) is larger than any single architecture change in the entire project history.
+
+---
+
 ## Overall Progression
 
 ```
@@ -508,10 +604,16 @@ v3: 65.97%  ── Contrastive pretrain, DANN, transformer fusion
  │  (+10.05 pp)
  ▼
 v4: 81.94%  ── Class rebalancing, CLS-token encoder, WGAN-GP
- │  (+15.97 pp)  ← BIGGEST SINGLE JUMP
+ │  (+15.97 pp)  ← BIGGEST SINGLE JUMP (architecture)
  ▼
 v5: 82.55%  ── CMMA gated cross-attention, emotion-aware gating
-    (+0.61 pp)
+ │  (+0.61 pp)
+ ▼
+LOSO v1: 68.41%  ── Baseline 32-fold LOSO evaluation
+ │  (subject-independent baseline)
+ ▼
+LOSO v2: 89.86%  ── Cross-subject norm, EEG-only weights, ensemble
+    (+21.44 pp)  ← BIGGEST SINGLE JUMP (evaluation methodology)
 ```
 
 ### What Mattered Most (Ranked by Impact)
@@ -526,6 +628,9 @@ v5: 82.55%  ── CMMA gated cross-attention, emotion-aware gating
 | 6 | CLS-token EEG encoder | Part of v4 | v4 |
 | 7 | Emotion-aware gating | Interpretability | v5 |
 | 8 | Focal loss + class weights | Essential | v2 |
+| 9 | Cross-subject z-score normalization | +21.44 pp (LOSO) | LOSO v2 |
+| 10 | EEG-only class weights (√ dampening) | Part of LOSO v2 | LOSO v2 |
+| 11 | Multi-pairing test ensemble (5×) | Part of LOSO v2 | LOSO v2 |
 
 ### What Did NOT Work
 
@@ -595,6 +700,8 @@ amers/
 │   ├── v3_train_rl.py
 │   ├── v3_evaluate.py
 │   ├── v5_train_cmma.py         # CMMA end-to-end (current best)
+│   ├── v5_loso.py               # LOSO v1 — baseline 32-fold evaluation
+│   ├── v5_loso_v2.py            # LOSO v2 — improved LOSO (89.86%)
 │   └── evaluate.py
 ├── notebooks/
 │   └── 00_setup_and_run.ipynb   # Google Colab master notebook
@@ -614,5 +721,6 @@ amers/
 ---
 
 *Document generated: February 2026*
-*Best model: v5.3 — 82.55% accuracy (commit 1751ad1)*
-*Current code: v5.3 (reverted from v5.8)*
+*Best model (subject-dependent): v5.3 — 82.55% accuracy (commit 1751ad1)*
+*Best LOSO (subject-independent): LOSO v2 — 89.86% ± 6.86% accuracy (commit 3e82cf6)*
+*Current code: v5.3 + LOSO v2*
