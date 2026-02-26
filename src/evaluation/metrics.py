@@ -37,19 +37,23 @@ def compute_all_metrics(
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
 
+    # Explicit label list so sklearn always reports all 4 classes,
+    # even when a fold's test subject lacks some emotion classes.
+    all_labels = list(range(len(label_names)))
+
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
-        "f1_macro": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
-        "f1_weighted": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
-        "precision_macro": float(precision_score(y_true, y_pred, average="macro", zero_division=0)),
-        "recall_macro": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
+        "f1_macro": float(f1_score(y_true, y_pred, labels=all_labels, average="macro", zero_division=0)),
+        "f1_weighted": float(f1_score(y_true, y_pred, labels=all_labels, average="weighted", zero_division=0)),
+        "precision_macro": float(precision_score(y_true, y_pred, labels=all_labels, average="macro", zero_division=0)),
+        "recall_macro": float(recall_score(y_true, y_pred, labels=all_labels, average="macro", zero_division=0)),
         "kappa": float(cohen_kappa_score(y_true, y_pred)),
-        "per_class_f1": f1_score(y_true, y_pred, average=None, zero_division=0).tolist(),
-        "per_class_precision": precision_score(y_true, y_pred, average=None, zero_division=0).tolist(),
-        "per_class_recall": recall_score(y_true, y_pred, average=None, zero_division=0).tolist(),
-        "confusion_matrix": confusion_matrix(y_true, y_pred).tolist(),
+        "per_class_f1": f1_score(y_true, y_pred, labels=all_labels, average=None, zero_division=0).tolist(),
+        "per_class_precision": precision_score(y_true, y_pred, labels=all_labels, average=None, zero_division=0).tolist(),
+        "per_class_recall": recall_score(y_true, y_pred, labels=all_labels, average=None, zero_division=0).tolist(),
+        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=all_labels).tolist(),
         "report_str": classification_report(
-            y_true, y_pred, target_names=label_names, zero_division=0,
+            y_true, y_pred, labels=all_labels, target_names=label_names, zero_division=0,
         ),
     }
 
