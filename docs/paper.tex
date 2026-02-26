@@ -120,7 +120,7 @@
 % ABSTRACT
 % ============================================================
 \begin{abstract}
-Emotion recognition from physiological and behavioral signals is a challenging problem with applications in healthcare, human-computer interaction, and affective computing. We present \textbf{AMERS}, an Adaptive Multimodal Emotion Recognition System that fuses EEG signals from the DEAP dataset with speech utterances from IEMOCAP for four-class emotion classification (angry, happy, sad, neutral) via cross-domain label-aligned pairing. Through a systematic ablation spanning five major system versions and nine sub-versions, we demonstrate that \textbf{class rebalancing ($+$15.97\,pp)} dominates architectural innovation ($+$0.61\,pp) in small-data multimodal regimes, and that standard regularization techniques consistently degrade performance at extreme parameter-to-sample ratios (1,650:1). Our architecture introduces \textbf{Cross-Modal Mutual Attention (CMMA)}, a bidirectional gated cross-attention mechanism, and \textbf{Emotion-Aware Gating (EAG)}, which learns per-class modality weights via annealed teacher forcing. The final model achieves \textbf{82.55\%} accuracy and $\sim$\textbf{0.83} macro F1, exceeding both target thresholds. Importantly, since DEAP and IEMOCAP are independently collected corpora with no shared subjects or recordings, our results demonstrate that cross-attention can extract complementary signal even from \emph{separately recorded} modalities---a stronger test of fusion robustness than co-registered data where modalities are trivially correlated. We provide a complete account of what worked, what failed, and why.
+Emotion recognition from physiological and behavioral signals is a challenging problem with applications in healthcare, human-computer interaction, and affective computing. We present \textbf{AMERS}, an Adaptive Multimodal Emotion Recognition System that fuses EEG signals from the DEAP dataset with speech utterances from IEMOCAP for four-class emotion classification (angry, happy, sad, neutral) via cross-domain label-aligned pairing. Through a systematic ablation spanning five major system versions and nine sub-versions, we demonstrate that \textbf{class rebalancing ($+$15.97\,pp)} dominates architectural innovation ($+$0.61\,pp) in small-data multimodal regimes, and that standard regularization techniques consistently degrade performance at extreme parameter-to-sample ratios (1,650:1). Our architecture introduces \textbf{Cross-Modal Mutual Attention (CMMA)}, a bidirectional gated cross-attention mechanism, and \textbf{Emotion-Aware Gating (EAG)}, which learns per-class modality weights via annealed teacher forcing. The final model achieves \textbf{82.55\%} accuracy and $\sim$\textbf{0.83} macro F1, exceeding both target thresholds. A 32-fold leave-one-subject-out (LOSO) evaluation confirms cross-subject generalization at \textbf{68.41\% $\pm$ 8.37\%}, consistent with the known subject-dependent gap in DEAP literature. Importantly, since DEAP and IEMOCAP are independently collected corpora with no shared subjects or recordings, our results demonstrate that cross-attention can extract complementary signal even from \emph{separately recorded} modalities---a stronger test of fusion robustness than co-registered data where modalities are trivially correlated. We provide a complete account of what worked, what failed, and why.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -154,7 +154,7 @@ In this paper, we present \textbf{AMERS}, an end-to-end trainable system that in
     \item Systematic ablation across 5 major versions and 9 sub-versions documenting why common regularization techniques fail at extreme parameter-to-sample ratios
     \item Bidirectional gated cross-attention (CMMA) and per-class modality weighting (EAG) with annealed teacher forcing
     \item Demonstration that cross-modal attention can extract complementary signal from \emph{independently recorded} modalities via cross-domain label-aligned pairing
-    \item 82.55\% accuracy and $\sim$0.83 macro F1 on 4-class emotion recognition (DEAP + IEMOCAP)
+    \item 82.55\% accuracy and $\sim$0.83 macro F1 on 4-class emotion recognition (DEAP + IEMOCAP); 68.41\% under 32-fold LOSO
 \end{itemize}
 \end{keybox}
 
@@ -313,10 +313,10 @@ AMERS processes raw EEG features and speech MFCCs through separate encoder netwo
 \rowcolor{headerblue!10}
 \textcolor{headerblue}{\textbf{Class}} & \textcolor{headerblue}{\textbf{Quadrant}} & \textcolor{headerblue}{\textbf{Samples}} \\
 \midrule
-Angry   & Low V, High A & 1,140 \\
-\rowcolor{tablegray} Happy   & High V, High A & 41,940 \\
-Sad     & Low V, Low A & 16,680 \\
-\rowcolor{tablegray} Neutral & High V, Low A & 17,040 \\
+Happy   & High V, High A & 1,140 \\
+\rowcolor{tablegray} Sad     & Low V, Low A & 41,940 \\
+Angry   & Low V, High A & 17,760 \\
+\rowcolor{tablegray} Neutral & High V, Low A & 15,960 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -901,6 +901,34 @@ Figure~\ref{fig:version_progression} reveals that data-level improvements (class
 
 Figure~\ref{fig:confusion_matrix} shows that the main confusion axis is happy$\leftrightarrow$neutral (14\% and 12\%), consistent with the acoustic similarity of these positive-valence states. Sad achieves the highest per-class accuracy (88\%), likely because it has distinctive features in both EEG (low arousal) and speech (slow rate, low pitch).
 
+\subsection{Subject-Independent (LOSO) Evaluation}
+
+To assess cross-subject generalization, we conduct a 32-fold leave-one-subject-out (LOSO) evaluation on DEAP. In each fold, one subject is held out as the test set, the next subject serves as the validation set, and the remaining 30 subjects form the training set. IEMOCAP speech data is split 80/20 across all folds (constant). Each fold trains from scratch with reduced hyperparameters (40 epochs, patience~10) using fresh encoder weights initialized from pretrained checkpoints.
+
+\vspace{2pt}
+\begin{center}
+\renewcommand{\arraystretch}{1.30}
+\small
+\begin{tabular}{@{\hspace{6pt}}l@{\hspace{16pt}}r@{\hspace{6pt}}}
+\toprule
+\rowcolor{headerblue!10}
+\textcolor{headerblue}{\textbf{Metric}} & \textcolor{headerblue}{\textbf{Value}} \\
+\midrule
+Mean accuracy & 68.41\% $\pm$ 8.37\% \\
+\rowcolor{tablegray} Median accuracy & 70.29\% \\
+Range & [48.58\%, 86.46\%] \\
+\rowcolor{tablegray} Mean F1 (macro) & 0.575 $\pm$ 0.059 \\
+Best fold (subject 12) & 86.46\% \\
+\rowcolor{tablegray} Worst fold (subject 5) & 48.58\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{-2pt}
+
+The $\sim$14\,pp drop from subject-dependent (82.55\%) to subject-independent (68.41\%) evaluation is consistent with the well-documented individual variability in EEG signals~\cite{li2018eeg}. Per-class pooled results reveal that sad (F1~=~0.73) and angry (F1~=~0.85) generalize well across subjects, while happy---the extreme minority class (1,140 samples, 1.5\% of DEAP)---collapses to F1~=~0.12 under LOSO, confirming that the subject-dependent evaluation masked its fragility. The high fold variance (std~=~8.37\%) reflects known inter-subject EEG differences in the DEAP dataset.
+
+\textbf{Encoder pretraining caveat:} DANN and contrastive encoder pretraining used all 32 subjects. While the CMMA fusion is trained per fold on 30 subjects only, the encoder representations carry some information about held-out subjects. A fully leak-free LOSO protocol would re-pretrain encoders per fold, which we leave for future work.
+
 % ============================================================
 % 6. DISCUSSION
 % ============================================================
@@ -936,11 +964,11 @@ The conservative gate initialization ($b_g = -2.0$, starting at $\sim$12\% injec
     
     \item \textbf{Cross-corpus alignment}: DEAP (passive EEG) and IEMOCAP (active speech) are independently collected corpora with no shared subjects, recordings, or stimuli. Our system performs cross-domain co-regularized learning, not same-event multimodal fusion (see Section~\ref{sec:cross_corpus}). Validating the practical utility of this approach requires evaluation on co-recorded EEG-speech data.
     
-    \item \textbf{Subject-dependent evaluation}: Our evaluation uses randomized train/validation splits that may include same-subject EEG data across partitions. Leave-one-subject-out (LOSO) cross-validation is the gold standard for EEG generalization claims~\cite{li2018eeg}. Our reported accuracy \emph{likely overestimates} cross-subject performance; LOSO evaluation would almost certainly yield lower accuracy (we estimate 70--76\% based on typical DEAP subject-dependent vs.\ subject-independent gaps in the literature) but would provide more credible generalization evidence. We leave LOSO evaluation for future work.
+    \item \textbf{Subject-dependent vs.\ subject-independent gap}: Our 32-fold LOSO evaluation yields 68.41\% $\pm$ 8.37\% mean accuracy---a $\sim$14\,pp drop from the subject-dependent 82.55\%. This confirms that the randomized split overestimates cross-subject performance. Furthermore, encoder pretraining (DANN, contrastive) used all 32 subjects, introducing partial data leakage into per-fold LOSO. A fully leak-free protocol would re-pretrain encoders per fold.
     
     \item \textbf{No statistical validation}: We report single-run results. The 0.61\,pp CMMA gain over v4 and $\pm$1\% validation variance from random pairing mean that small improvements cannot be confirmed without multi-seed evaluation and paired significance testing.
     
-    \item \textbf{Residual imbalance}: Angry has only 1,140 EEG samples vs.\ 41,940 for happy, limiting minority-class encoder quality (37.5\% standalone EEG accuracy).
+    \item \textbf{Residual imbalance}: Happy has only 1,140 EEG samples (high-valence, high-arousal quadrant) vs.\ 41,940 for sad, limiting minority-class encoder quality. Under LOSO, happy collapses to F1~=~0.12 while subject-dependent evaluation masked this fragility.
     
     \item \textbf{Modality imbalance}: Speech encoder (56.5\%) substantially outperforms EEG encoder (37.5\%), raising the question of whether EEG's marginal benefit justifies its collection complexity.
     
@@ -952,7 +980,7 @@ The conservative gate initialization ($b_g = -2.0$, starting at $\sim$12\% injec
 % ============================================================
 \section{Conclusion}
 
-We presented AMERS, an adaptive multimodal emotion recognition system that fuses EEG and speech through Cross-Modal Mutual Attention with Emotion-Aware Gating. Across five major versions and nine CMMA sub-versions, we achieved \textbf{82.55\%} accuracy on four-class recognition, exceeding targets of 75\% accuracy and 0.72 macro F1.
+We presented AMERS, an adaptive multimodal emotion recognition system that fuses EEG and speech through Cross-Modal Mutual Attention with Emotion-Aware Gating. Across five major versions and nine CMMA sub-versions, we achieved \textbf{82.55\%} accuracy on four-class recognition, exceeding targets of 75\% accuracy and 0.72 macro F1. A 32-fold LOSO evaluation confirms subject-independent generalization at \textbf{68.41\% $\pm$ 8.37\%}, with the $\sim$14\,pp gap reflecting known EEG inter-subject variability.
 
 The key lessons are: \textbf{(1)}~data quality---particularly class balance---dominates architecture for accuracy; \textbf{(2)}~bidirectional gated cross-attention with conservative initialization provides effective heterogeneous fusion; \textbf{(3)}~annealed teacher forcing resolves circular dependencies in per-class gating; and \textbf{(4)}~standard regularization can be counterproductive in data-limited settings.
 
@@ -964,7 +992,7 @@ The key lessons are: \textbf{(1)}~data quality---particularly class balance---do
 \begin{enumerate}[leftmargin=*, label=\textcolor{headerblue}{\arabic*.}, itemsep=2pt]
     \item \textbf{Larger datasets} --- EEG foundation models and synthetic data generation could address the fundamental data bottleneck.
     \item \textbf{Pretrained speech models} --- wav2vec 2.0 or HuBERT features could improve speech representations for confusing classes (happy/neutral).
-    \item \textbf{Cross-subject evaluation} --- Leave-one-subject-out protocol for rigorous generalization assessment.
+    \item \textbf{Leak-free LOSO} --- Re-pretrain encoders per fold to eliminate the pretraining data leak identified in our current LOSO protocol.
     \item \textbf{Additional modalities} --- Facial video, text transcripts, or peripheral physiological signals for breaking the performance ceiling.
     \item \textbf{Lightweight models} --- Given that data fixes outweigh model complexity, smaller models may reduce overfitting.
     \item \textbf{Real-time deployment} --- Streaming EEG/speech processing with incremental attention for HCI applications.
