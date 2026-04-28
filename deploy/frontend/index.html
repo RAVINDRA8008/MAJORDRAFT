@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AMERS Live Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="kicker">Adaptive Multimodal Emotion Recognition</p>
+        <h1>AMERS Web Inference Demo</h1>
+        <p class="subtitle">Paste 128-d EEG and 128-d Speech features to get a real-time emotion prediction.</p>
+      </header>
+
+      <section class="card">
+        <div class="row">
+          <label for="apiUrl">Backend API URL</label>
+          <input id="apiUrl" type="text" value="" placeholder="Leave blank to use this app URL" />
+        </div>
+
+        <div class="grid">
+          <div class="field-block">
+            <label for="eegInput">EEG Features (128 comma-separated values)</label>
+            <textarea id="eegInput" rows="8"></textarea>
+          </div>
+
+          <div class="field-block">
+            <label for="speechInput">Speech Features (128 comma-separated values)</label>
+            <textarea id="speechInput" rows="8"></textarea>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="fillBtn" type="button">Fill Random Example</button>
+          <button id="predictBtn" type="button" class="primary">Predict Emotion</button>
+        </div>
+      </section>
+
+      <section class="card result" id="resultCard">
+        <h2>Prediction</h2>
+        <p id="statusText">No prediction yet.</p>
+        <div id="bars" class="bars"></div>
+      </section>
+    </main>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
