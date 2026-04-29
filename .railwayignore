@@ -1,0 +1,17 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+
+notebooks/
+docs/
+tests/
+scripts/
+
+checkpoints/
+data/
+outputs/
+
+*.ipynb
+*.log
+*.tmp
