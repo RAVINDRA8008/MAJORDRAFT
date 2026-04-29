@@ -12,7 +12,6 @@ COPY config /app/config
 COPY src /app/src
 COPY deploy/backend /app/deploy/backend
 COPY deploy/frontend /app/deploy/frontend
-COPY checkpoints /app/checkpoints
 
 EXPOSE 8000
 
