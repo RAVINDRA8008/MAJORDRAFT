@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.model_service import ModelService
+from .model_service import ModelService
 
 
 class PredictRequest(BaseModel):
@@ -41,7 +41,11 @@ if frontend_dir.exists():
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "model": service.model_type}
+    out: dict[str, str] = {"status": "ok", "model": service.model_type}
+    if getattr(service, "init_error", None):
+        out["status"] = "degraded"
+        out["init_error"] = str(service.init_error)
+    return out
 
 
 @app.get("/")

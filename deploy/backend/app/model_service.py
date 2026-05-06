@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -32,7 +33,14 @@ class ModelService:
 
     def __init__(self, config_path: str | Path = "config/default.yaml") -> None:
         self.device = torch.device("cpu")
-        self.cfg = load_config(config_path)
+        self.init_error: str | None = None
+
+        try:
+            self.cfg = load_config(config_path)
+        except Exception as exc:
+            # Keep API alive in degraded mode if config cannot be loaded in production.
+            self.cfg = self._fallback_cfg()
+            self.init_error = f"config_load_failed: {exc}"
 
         ckpt_dir_env = os.getenv("AMERS_CHECKPOINT_DIR", "")
         if ckpt_dir_env:
@@ -43,7 +51,28 @@ class ModelService:
         self.model: torch.nn.Module | None = None
         self.model_type = "mock"
 
-        self._init_model()
+        try:
+            self._init_model()
+        except Exception as exc:
+            self.model = None
+            self.model_type = "mock-init-error"
+            if self.init_error is None:
+                self.init_error = f"model_init_failed: {exc}"
+
+    def _fallback_cfg(self) -> Any:
+        return SimpleNamespace(
+            model=SimpleNamespace(
+                num_classes=4,
+                fusion=SimpleNamespace(
+                    eeg_dim=128,
+                    speech_dim=128,
+                    hidden_dims=[128, 64],
+                    dropout=0.15,
+                ),
+            ),
+            v3=SimpleNamespace(transformer_fusion=SimpleNamespace()),
+            v5=SimpleNamespace(),
+        )
 
     def _init_model(self) -> None:
         v5_candidates = [
